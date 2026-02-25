@@ -1,0 +1,172 @@
+const PAGE_SIZE = 10;
+let allPosts = [];
+let filteredPosts = [];
+let page = 1;
+
+const el = {
+  searchInput: document.getElementById("searchInput"),
+  sortSelect: document.getElementById("sortSelect"),
+  categorySelect: document.getElementById("categorySelect"),
+  metaLine: document.getElementById("metaLine"),
+  listContainer: document.getElementById("listContainer"),
+  pageInfo: document.getElementById("pageInfo"),
+  prevBtn: document.getElementById("prevBtn"),
+  nextBtn: document.getElementById("nextBtn"),
+  listView: document.getElementById("listView"),
+  detailView: document.getElementById("detailView"),
+  backBtn: document.getElementById("backBtn"),
+  detailTitle: document.getElementById("detailTitle"),
+  detailMeta: document.getElementById("detailMeta"),
+  detailBody: document.getElementById("detailBody"),
+};
+
+function parseDate(value) {
+  const d = new Date(value || 0);
+  return Number.isNaN(d.getTime()) ? new Date(0) : d;
+}
+
+function relativeTime(value) {
+  const now = Date.now();
+  const ts = parseDate(value).getTime();
+  const diffSec = Math.max(Math.floor((now - ts) / 1000), 0);
+  if (diffSec < 60) return `${diffSec}초 전`;
+  const m = Math.floor(diffSec / 60);
+  if (m < 60) return `${m}분 전`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}시간 전`;
+  const d = Math.floor(h / 24);
+  if (d < 30) return `${d}일 전`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo}개월 전`;
+  return `${Math.floor(mo / 12)}년 전`;
+}
+
+function sortPosts(posts, sortKey) {
+  const sorted = [...posts];
+  if (sortKey === "latest") {
+    sorted.sort((a, b) => parseDate(b.published_at || b.archived_at) - parseDate(a.published_at || a.archived_at));
+  } else if (sortKey === "oldest") {
+    sorted.sort((a, b) => parseDate(a.published_at || a.archived_at) - parseDate(b.published_at || b.archived_at));
+  } else if (sortKey === "title") {
+    sorted.sort((a, b) => (a.title || "").localeCompare(b.title || "", "ko"));
+  } else if (sortKey === "category") {
+    sorted.sort((a, b) => (a.category || "").localeCompare(b.category || "", "ko"));
+  }
+  return sorted;
+}
+
+function applyFilters() {
+  const q = el.searchInput.value.trim().toLowerCase();
+  const category = el.categorySelect.value;
+  const base = allPosts.filter((p) => {
+    if (category !== "all" && p.category !== category) return false;
+    if (!q) return true;
+    const hay = `${p.title || ""} ${p.summary || ""} ${p.body || ""}`.toLowerCase();
+    return hay.includes(q);
+  });
+  filteredPosts = sortPosts(base, el.sortSelect.value);
+  page = 1;
+  renderList();
+}
+
+function openDetail(id) {
+  const post = allPosts.find((p) => String(p.id) === String(id));
+  if (!post) return;
+  el.listView.classList.add("hidden");
+  el.detailView.classList.remove("hidden");
+
+  const a = document.createElement("a");
+  a.href = post.url || "#";
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = post.title || "제목 없음";
+
+  el.detailTitle.textContent = "";
+  el.detailTitle.appendChild(a);
+  el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 생성 일자: ${post.published_at || post.archived_at || "-"}`;
+  el.detailBody.textContent = post.body || post.summary || "";
+}
+
+function renderList() {
+  const total = filteredPosts.length;
+  const totalPages = Math.max(Math.ceil(total / PAGE_SIZE), 1);
+  page = Math.min(Math.max(page, 1), totalPages);
+
+  const start = (page - 1) * PAGE_SIZE;
+  const rows = filteredPosts.slice(start, start + PAGE_SIZE);
+
+  el.metaLine.textContent = `총 ${total}건 · 페이지 ${page}/${totalPages}`;
+  el.pageInfo.textContent = `${page} / ${totalPages}`;
+  el.prevBtn.disabled = page <= 1;
+  el.nextBtn.disabled = page >= totalPages;
+
+  el.listContainer.textContent = "";
+  rows.forEach((p, idx) => {
+    const item = document.createElement("div");
+    item.className = "item";
+
+    const head = document.createElement("div");
+    head.className = "item-head";
+
+    const rank = document.createElement("div");
+    rank.className = "rank";
+    rank.textContent = `${start + idx + 1}.`;
+
+    const body = document.createElement("div");
+    const title = document.createElement("a");
+    title.className = "title";
+    title.textContent = p.title || "제목 없음";
+    title.href = "#";
+    title.addEventListener("click", (e) => {
+      e.preventDefault();
+      openDetail(p.id);
+    });
+
+    const summary = document.createElement("div");
+    summary.className = "summary";
+    summary.textContent = p.summary || "";
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `${relativeTime(p.published_at || p.archived_at)} | ${p.category || "-"}`;
+
+    body.appendChild(title);
+    body.appendChild(summary);
+    body.appendChild(meta);
+    head.appendChild(rank);
+    head.appendChild(body);
+    item.appendChild(head);
+    el.listContainer.appendChild(item);
+  });
+}
+
+async function loadData() {
+  const res = await fetch("./data/news_archive.json", { cache: "no-store" });
+  if (!res.ok) throw new Error(`Failed to load data: ${res.status}`);
+  allPosts = await res.json();
+  filteredPosts = sortPosts([...allPosts], "latest");
+  renderList();
+}
+
+function bindEvents() {
+  el.searchInput.addEventListener("input", applyFilters);
+  el.sortSelect.addEventListener("change", applyFilters);
+  el.categorySelect.addEventListener("change", applyFilters);
+  el.prevBtn.addEventListener("click", () => {
+    page -= 1;
+    renderList();
+  });
+  el.nextBtn.addEventListener("click", () => {
+    page += 1;
+    renderList();
+  });
+  el.backBtn.addEventListener("click", () => {
+    el.detailView.classList.add("hidden");
+    el.listView.classList.remove("hidden");
+  });
+}
+
+bindEvents();
+loadData().catch((err) => {
+  el.metaLine.textContent = `데이터 로드 실패: ${err.message}`;
+});

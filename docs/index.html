@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>news archive</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests"
+    />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="X-Frame-Options" content="DENY" />
+    <meta name="color-scheme" content="light" />
+    <link rel="stylesheet" href="./assets/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <h1>news archive</h1>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="toolbar">
+        <input id="searchInput" type="search" placeholder="제목 또는 본문 검색" />
+        <select id="sortSelect">
+          <option value="latest">최신 순</option>
+          <option value="oldest">오래된 순</option>
+          <option value="title">제목 순</option>
+          <option value="category">카테고리 순</option>
+        </select>
+        <select id="categorySelect">
+          <option value="all">전체 카테고리</option>
+          <option value="IT">IT</option>
+          <option value="취업">취업</option>
+        </select>
+      </section>
+
+      <section id="listView">
+        <p class="meta" id="metaLine"></p>
+        <div id="listContainer" class="list"></div>
+        <div class="pager">
+          <button id="prevBtn" type="button">이전</button>
+          <span id="pageInfo"></span>
+          <button id="nextBtn" type="button">다음</button>
+        </div>
+      </section>
+
+      <section id="detailView" class="detail hidden">
+        <button id="backBtn" type="button">목록으로</button>
+        <h2 id="detailTitle"></h2>
+        <p id="detailMeta" class="meta"></p>
+        <article id="detailBody"></article>
+      </section>
+    </main>
+
+    <script src="./assets/app.js" defer></script>
+  </body>
+</html>
