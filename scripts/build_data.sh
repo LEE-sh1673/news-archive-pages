@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
-python3 /home/lsh/news_archive_pages/scripts/build_data.py
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$SCRIPT_DIR/build_data.py"
