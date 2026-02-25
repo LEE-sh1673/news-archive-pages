@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import html
 import json
 import os
 import sys
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -9,10 +11,45 @@ DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
 DEFAULT_OUT = ROOT / "docs" / "data" / "news_archive.json"
 
 
-def sanitize(text):
+MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
+
+
+def _fix_mojibake(text: str) -> str:
+    if not any(m in text for m in MOJIBAKE_MARKERS):
+        return text
+    try:
+        return text.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore")
+    except Exception:
+        return text
+
+
+def _strip_feed_noise(text: str) -> str:
+    patterns = [
+        r"(?is)Related\s+[A-Za-z].*$",
+        r"(?is)\bFacebook\s+Twitter\s+LinkedIn.*$",
+        r"(?is)\bLike this:\s*Like Loading\.\.\..*$",
+        r"(?is)관련 기사 더 보기.*$",
+        r"(?is)Loading Comments\.\.\..*$",
+        r"(?is)You must be logged in to post a comment\..*$",
+        r"(?is)%d bloggers like this:.*$",
+        r"(?is)←.*$",
+        r"(?is)→.*$",
+    ]
+    out = text
+    for p in patterns:
+        out = re.sub(p, "", out).strip()
+    return out
+
+
+def sanitize(text, field=""):
     if text is None:
         return ""
-    return str(text).replace("\x00", "").strip()
+    s = str(text).replace("\x00", "").strip()
+    s = html.unescape(s)
+    s = _fix_mojibake(s)
+    if field in ("summary", "body"):
+        s = _strip_feed_noise(s)
+    return s
 
 
 def main():
@@ -32,14 +69,14 @@ def main():
                     continue
                 rows.append(
                     {
-                        "id": sanitize(row.get("id")),
-                        "title": sanitize(row.get("title")),
-                        "summary": sanitize(row.get("summary")),
-                        "body": sanitize(row.get("body")),
-                        "url": sanitize(row.get("url")),
-                        "category": sanitize(row.get("category")),
-                        "published_at": sanitize(row.get("published_at")),
-                        "archived_at": sanitize(row.get("archived_at")),
+                        "id": sanitize(row.get("id"), "id"),
+                        "title": sanitize(row.get("title"), "title"),
+                        "summary": sanitize(row.get("summary"), "summary"),
+                        "body": sanitize(row.get("body"), "body"),
+                        "url": sanitize(row.get("url"), "url"),
+                        "category": sanitize(row.get("category"), "category"),
+                        "published_at": sanitize(row.get("published_at"), "published_at"),
+                        "archived_at": sanitize(row.get("archived_at"), "archived_at"),
                     }
                 )
     else:

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import datetime as dt
+import html
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ TIMEZONE = os.environ.get("TIMEZONE", "Asia/Seoul")
 MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
 ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "8")))
+MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
 
 
 def fail(msg: str) -> int:
@@ -25,9 +27,24 @@ def fail(msg: str) -> int:
 def clean_text(s: str) -> str:
     if not s:
         return ""
+    s = html.unescape(s)
     s = re.sub(r"\s+", " ", s).strip()
     s = re.sub(r"https?://\S+", "", s)
     s = re.sub(r"\+\d+\s*chars", "", s, flags=re.IGNORECASE)
+    if any(m in s for m in MOJIBAKE_MARKERS):
+        try:
+            s = s.encode("latin-1", errors="ignore").decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    s = re.sub(r"(?is)Related\s+[A-Za-z].*$", "", s).strip()
+    s = re.sub(r"(?is)\bFacebook\s+Twitter\s+LinkedIn.*$", "", s).strip()
+    s = re.sub(r"(?is)\bLike this:\s*Like Loading\.\.\..*$", "", s).strip()
+    s = re.sub(r"(?is)관련 기사 더 보기.*$", "", s).strip()
+    s = re.sub(r"(?is)Loading Comments\.\.\..*$", "", s).strip()
+    s = re.sub(r"(?is)You must be logged in to post a comment\..*$", "", s).strip()
+    s = re.sub(r"(?is)%d bloggers like this:.*$", "", s).strip()
+    s = re.sub(r"(?is)←.*$", "", s).strip()
+    s = re.sub(r"(?is)→.*$", "", s).strip()
     return s.strip(" -")
 
 
