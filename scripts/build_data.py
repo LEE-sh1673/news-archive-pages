@@ -71,11 +71,12 @@ def make_bullet_summary(text: str, max_lines: int = 24) -> str:
     for s in sents:
         if len(out) >= max_lines:
             break
-        chunk = s[:120]
-        split_at = chunk.rfind(" ")
-        if split_at < 40:
-            split_at = len(chunk)
-        out.append(f"- {s[:split_at].strip()}")
+        sentence = sanitize(s, "body").strip()
+        if not sentence:
+            continue
+        if sentence[-1] not in ".!?。다":
+            sentence = sentence + "."
+        out.append(f"- {sentence}")
     return "\n".join(out[:max_lines])
 
 

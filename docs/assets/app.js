@@ -20,6 +20,32 @@ const el = {
   detailBody: document.getElementById("detailBody"),
 };
 
+function escapeHtml(text) {
+  return String(text || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function bulletTextToHtml(text) {
+  const lines = String(text || "")
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return "<ul><li>요약 데이터가 없습니다.</li></ul>";
+
+  const items = [];
+  for (const line of lines) {
+    const normalized = line.replace(/^\-\s*/, "").trim();
+    if (!normalized) continue;
+    items.push(`<li>${escapeHtml(normalized)}</li>`);
+  }
+  if (items.length === 0) return "<ul><li>요약 데이터가 없습니다.</li></ul>";
+  return `<ul>${items.join("")}</ul>`;
+}
+
 function parseDate(value) {
   const d = new Date(value || 0);
   return Number.isNaN(d.getTime()) ? new Date(0) : d;
@@ -87,7 +113,7 @@ function openDetail(id) {
   const articlePublishedAt = post.article_published_at || post.published_at || "-";
   const fetchedAt = post.fetched_at || post.archived_at || "-";
   el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
-  el.detailBody.textContent = post.body || post.summary || "";
+  el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
 }
 
 function renderList() {

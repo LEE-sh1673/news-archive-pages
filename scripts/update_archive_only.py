@@ -98,8 +98,12 @@ def local_summary(title: str, description: str, content: str) -> str:
     for s in sentences:
         if len(bullets) >= MAX_SUMMARY_LINES:
             break
-        chunks = split_long_text(s, chunk_size=120)
-        bullets.append(f"- {chunks[0]}")
+        sentence = clean_text(s)
+        if not sentence:
+            continue
+        if sentence[-1] not in ".!?。다":
+            sentence = sentence + "."
+        bullets.append(f"- {sentence}")
     return enforce_line_limit("\n".join(bullets), MAX_SUMMARY_LINES)
 
 
@@ -116,8 +120,9 @@ def normalize_bullet_output(text: str) -> str:
             stripped = clean_text(ln.lstrip("- ").strip())
             if not stripped:
                 continue
-            # Force single-line top-level bullet only.
-            fixed.append(f"- {split_long_text(stripped, chunk_size=120)[0]}")
+            if stripped[-1] not in ".!?。다":
+                stripped = stripped + "."
+            fixed.append(f"- {stripped}")
         lines = fixed
     return enforce_line_limit("\n".join(lines), MAX_SUMMARY_LINES)
 
@@ -127,6 +132,7 @@ def llm_summary(title: str, description: str, content: str) -> str:
         f"다음 뉴스 본문(document.body.innerText에서 추출된 텍스트)을 한국어 불릿 리스트로 요약해줘.\n"
         f"- 전체 출력은 최대 {MAX_SUMMARY_LINES}줄\n"
         "- 각 불릿은 반드시 1줄만 사용\n"
+        "- 각 불릿은 서로 독립된 완전한 요약 문장이어야 함\n"
         "- 제목과 직접 연관된 핵심 내용만 남기고 노이즈(광고/네비/댓글 영역)는 제외\n"
         "- 과장/추측 없이 사실 중심으로 정리\n"
         "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
