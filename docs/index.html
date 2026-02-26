@@ -11,13 +11,14 @@
     <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
     <meta http-equiv="X-Content-Type-Options" content="nosniff" />
     <meta http-equiv="X-Frame-Options" content="DENY" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="stylesheet" href="./assets/styles.css" />
   </head>
   <body>
     <header class="topbar">
       <div class="topbar-inner">
-        <h1>news archive</h1>
+        <h1><a id="homeTitle" href="#">news archive</a></h1>
+        <button id="themeToggle" type="button" aria-label="테마 전환">🌙 Dark</button>
       </div>
     </header>
 
@@ -41,9 +42,11 @@
         <p class="meta" id="metaLine"></p>
         <div id="listContainer" class="list"></div>
         <div class="pager">
+          <button id="firstBtn" type="button">처음</button>
           <button id="prevBtn" type="button">이전</button>
           <span id="pageInfo"></span>
           <button id="nextBtn" type="button">다음</button>
+          <button id="lastBtn" type="button">끝</button>
         </div>
       </section>
 

@@ -4,14 +4,19 @@ let filteredPosts = [];
 let page = 1;
 
 const el = {
+  homeTitle: document.getElementById("homeTitle"),
+  themeToggle: document.getElementById("themeToggle"),
+  toolbar: document.querySelector(".toolbar"),
   searchInput: document.getElementById("searchInput"),
   sortSelect: document.getElementById("sortSelect"),
   categorySelect: document.getElementById("categorySelect"),
   metaLine: document.getElementById("metaLine"),
   listContainer: document.getElementById("listContainer"),
   pageInfo: document.getElementById("pageInfo"),
+  firstBtn: document.getElementById("firstBtn"),
   prevBtn: document.getElementById("prevBtn"),
   nextBtn: document.getElementById("nextBtn"),
+  lastBtn: document.getElementById("lastBtn"),
   listView: document.getElementById("listView"),
   detailView: document.getElementById("detailView"),
   backBtn: document.getElementById("backBtn"),
@@ -96,9 +101,24 @@ function applyFilters() {
   renderList();
 }
 
+function goHome(resetAll = false) {
+  if (resetAll) {
+    el.searchInput.value = "";
+    el.sortSelect.value = "latest";
+    el.categorySelect.value = "all";
+    filteredPosts = sortPosts([...allPosts], "latest");
+    page = 1;
+  }
+  el.detailView.classList.add("hidden");
+  el.listView.classList.remove("hidden");
+  el.toolbar.classList.remove("hidden");
+  renderList();
+}
+
 function openDetail(id) {
   const post = allPosts.find((p) => String(p.id) === String(id));
   if (!post) return;
+  el.toolbar.classList.add("hidden");
   el.listView.classList.add("hidden");
   el.detailView.classList.remove("hidden");
 
@@ -126,8 +146,10 @@ function renderList() {
 
   el.metaLine.textContent = `총 ${total}건 · 페이지 ${page}/${totalPages}`;
   el.pageInfo.textContent = `${page} / ${totalPages}`;
+  el.firstBtn.disabled = page <= 1;
   el.prevBtn.disabled = page <= 1;
   el.nextBtn.disabled = page >= totalPages;
+  el.lastBtn.disabled = page >= totalPages;
 
   el.listContainer.textContent = "";
   rows.forEach((p, idx) => {
@@ -171,6 +193,18 @@ function renderList() {
   });
 }
 
+function applyTheme(mode) {
+  const theme = mode === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", theme);
+  el.themeToggle.textContent = theme === "dark" ? "☀️ Light" : "🌙 Dark";
+  localStorage.setItem("theme", theme);
+}
+
+function toggleTheme() {
+  const now = document.documentElement.getAttribute("data-theme") || "light";
+  applyTheme(now === "dark" ? "light" : "dark");
+}
+
 async function loadData() {
   const res = await fetch("./data/news_archive.json", { cache: "no-store" });
   if (!res.ok) throw new Error(`Failed to load data: ${res.status}`);
@@ -180,9 +214,18 @@ async function loadData() {
 }
 
 function bindEvents() {
+  el.homeTitle.addEventListener("click", (e) => {
+    e.preventDefault();
+    goHome(true);
+  });
+  el.themeToggle.addEventListener("click", toggleTheme);
   el.searchInput.addEventListener("input", applyFilters);
   el.sortSelect.addEventListener("change", applyFilters);
   el.categorySelect.addEventListener("change", applyFilters);
+  el.firstBtn.addEventListener("click", () => {
+    page = 1;
+    renderList();
+  });
   el.prevBtn.addEventListener("click", () => {
     page -= 1;
     renderList();
@@ -191,12 +234,16 @@ function bindEvents() {
     page += 1;
     renderList();
   });
+  el.lastBtn.addEventListener("click", () => {
+    page = Math.max(Math.ceil(filteredPosts.length / PAGE_SIZE), 1);
+    renderList();
+  });
   el.backBtn.addEventListener("click", () => {
-    el.detailView.classList.add("hidden");
-    el.listView.classList.remove("hidden");
+    goHome(false);
   });
 }
 
+applyTheme(localStorage.getItem("theme") || "light");
 bindEvents();
 loadData().catch((err) => {
   el.metaLine.textContent = `데이터 로드 실패: ${err.message}`;
