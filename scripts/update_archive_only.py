@@ -8,6 +8,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
@@ -223,7 +224,17 @@ def summarize(title: str, description: str, content: str) -> str:
 
 
 def http_json(url: str, timeout: int = 20):
-    req = urllib.request.Request(url, headers={"User-Agent": "news-archive-bot/1.0"})
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            ),
+            "Accept": "application/json",
+            "X-Api-Key": NEWSAPI_KEY,
+        },
+    )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read().decode("utf-8", errors="replace")
     return json.loads(data)
@@ -398,6 +409,7 @@ def fetch_news(from_date: str, to_date: str, query: str):
             "to": to_date,
             "pageSize": NEWS_PAGE_SIZE,
             "page": page,
+            # Keep query param for compatibility with endpoints that don't honor X-Api-Key header.
             "apiKey": NEWSAPI_KEY,
         }
         url = "https://newsapi.org/v2/everything?" + urllib.parse.urlencode(params)
@@ -411,6 +423,27 @@ def fetch_news(from_date: str, to_date: str, query: str):
         if len(articles) < NEWS_PAGE_SIZE:
             break
     return all_articles
+
+
+def safe_fetch_news(from_date: str, to_date: str, query: str, label: str):
+    last_err = None
+    for attempt in range(1, 4):
+        try:
+            return fetch_news(from_date, to_date, query)
+        except HTTPError as e:
+            last_err = e
+            # 426 often indicates policy/transport constraints from provider edge.
+            # Retry with backoff; if still failing, degrade gracefully.
+            print(f"WARN: {label} fetch HTTPError {e.code} on attempt {attempt}/3: {e}", file=sys.stderr)
+        except URLError as e:
+            last_err = e
+            print(f"WARN: {label} fetch URLError on attempt {attempt}/3: {e}", file=sys.stderr)
+        except Exception as e:
+            last_err = e
+            print(f"WARN: {label} fetch error on attempt {attempt}/3: {e}", file=sys.stderr)
+
+    print(f"WARN: {label} fetch failed after retries: {last_err}", file=sys.stderr)
+    return []
 
 
 def make_id(url: str, title: str, published_at: str) -> str:
@@ -488,11 +521,13 @@ def main() -> int:
     it_query = "(AI OR 반도체 OR 클라우드 OR 빅테크 OR IT OR 소프트웨어)"
     job_query = "(취업 OR 채용 OR 고용 OR 노동시장 OR 실업)"
 
-    try:
-        it_articles = unique_articles(fetch_news(from_date, to_date, it_query), ITEM_LIMIT_PER_CATEGORY)
-        job_articles = unique_articles(fetch_news(from_date, to_date, job_query), ITEM_LIMIT_PER_CATEGORY)
-    except Exception as e:
-        return fail(str(e))
+    it_articles = unique_articles(safe_fetch_news(from_date, to_date, it_query, "IT"), ITEM_LIMIT_PER_CATEGORY)
+    job_articles = unique_articles(safe_fetch_news(from_date, to_date, job_query, "JOB"), ITEM_LIMIT_PER_CATEGORY)
+
+    if not it_articles and not job_articles:
+        # Do not fail the workflow on transient upstream issues.
+        print("WARN: no articles fetched for both categories; keeping existing archive.", file=sys.stderr)
+        return 0
 
     entries = []
     for category, arr in [("IT", it_articles), ("취업", job_articles)]:
