@@ -55,6 +55,34 @@ def enforce_line_limit(text: str, limit: int) -> str:
     return "\n".join(lines[:limit])
 
 
+def split_long_text(text: str, chunk_size: int = 140):
+    text = clean_text(text)
+    if len(text) <= chunk_size:
+        return [text]
+    out = []
+    s = text
+    while len(s) > chunk_size:
+        cut = s[:chunk_size]
+        pos = cut.rfind(" ")
+        if pos < 50:
+            pos = chunk_size
+        out.append(s[:pos].strip())
+        s = s[pos:].strip()
+    if s:
+        out.append(s)
+    return out
+
+
+def bulletize_lines(lines):
+    out = []
+    for ln in lines:
+        ln = clean_text(ln)
+        if not ln:
+            continue
+        out.append(f"- {ln}")
+    return out
+
+
 def local_summary(title: str, description: str, content: str) -> str:
     merged = " ".join(
         part for part in [clean_text(title), clean_text(description), clean_text(content)] if part
@@ -65,13 +93,51 @@ def local_summary(title: str, description: str, content: str) -> str:
     sentences = [s.strip(" -") for s in sentences if s and s.strip(" -")]
     if not sentences:
         sentences = [merged]
-    return enforce_line_limit("\n".join(sentences), MAX_SUMMARY_LINES)
+
+    bullets = []
+    for s in sentences:
+        if len(bullets) >= MAX_SUMMARY_LINES:
+            break
+        chunks = split_long_text(s, chunk_size=140)
+        if len(chunks) == 1:
+            bullets.append(f"- {chunks[0]}")
+        else:
+            bullets.append(f"- {chunks[0]}")
+            for sub in chunks[1:]:
+                if len(bullets) >= MAX_SUMMARY_LINES:
+                    break
+                bullets.append(f"  - {sub}")
+    return enforce_line_limit("\n".join(bullets), MAX_SUMMARY_LINES)
+
+
+def normalize_bullet_output(text: str) -> str:
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    # If model returned plain paragraphs, convert to bullet lines.
+    if not any(ln.lstrip().startswith("-") for ln in lines):
+        lines = bulletize_lines(lines)
+    else:
+        fixed = []
+        for ln in lines:
+            stripped = ln.lstrip()
+            indent = "  " if ln.startswith(("  -", "\t-")) else ""
+            if stripped.startswith("-"):
+                fixed.append(f"{indent}- {stripped.lstrip('-').strip()}")
+            else:
+                fixed.append(f"{indent}- {stripped}")
+        lines = fixed
+    return enforce_line_limit("\n".join(lines), MAX_SUMMARY_LINES)
 
 
 def llm_summary(title: str, description: str, content: str) -> str:
     prompt = (
-        f"다음 뉴스 내용을 한국어로 문맥 보존 요약해줘. 최대 {MAX_SUMMARY_LINES}줄.\n"
-        "핵심 배경/영향/시사점을 사실 중심으로 포함.\n\n"
+        f"다음 뉴스 본문을 한국어 불릿 리스트로 요약해줘.\n"
+        f"- 전체 출력은 최대 {MAX_SUMMARY_LINES}줄\n"
+        "- 각 불릿은 1~2줄 내로 유지\n"
+        "- 본문이 길면 하위 불릿(두 칸 들여쓰기 + '-') 사용\n"
+        "- 과장/추측 없이 사실 중심, 전체 흐름이 드러나게 정리\n"
+        "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
         f"제목: {title}\n"
         f"설명: {description}\n"
         f"본문: {content}\n"
@@ -93,7 +159,7 @@ def llm_summary(title: str, description: str, content: str) -> str:
     with urllib.request.urlopen(req, timeout=30) as resp:
         out = json.loads(resp.read().decode("utf-8", errors="replace"))
     txt = out.get("output_text", "").strip()
-    return enforce_line_limit(txt, MAX_SUMMARY_LINES) if txt else local_summary(title, description, content)
+    return normalize_bullet_output(txt) if txt else local_summary(title, description, content)
 
 
 def summarize(title: str, description: str, content: str) -> str:
