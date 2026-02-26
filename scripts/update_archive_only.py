@@ -63,33 +63,54 @@ def normalize_inner_text(s: str) -> str:
     return "\n".join(lines)
 
 
-def strip_ui_noise(s: str) -> str:
-    if not s:
+def _context_terms(title: str, description: str):
+    base = f"{title} {description}".lower()
+    terms = re.findall(r"[0-9a-zA-Z가-힣]{2,}", base)
+    stop = {
+        "속보",
+        "단독",
+        "기자",
+        "뉴스",
+        "관련",
+        "업데이트",
+        "today",
+        "news",
+        "the",
+        "and",
+    }
+    return {t for t in terms if t not in stop}
+
+
+def minimal_context_filter(title: str, description: str, body_text: str) -> str:
+    if not body_text:
         return ""
-    line_patterns = [
-        r"(?im)^\s*(기자|리포터|Reporter|By)\s*[:：].*$",
-        r"(?im)^\s*이메일\s*[:：].*$",
-        r"(?im)^\s*(문의|전화|Tel|Phone|Contact)\s*[:：].*$",
-        r"(?im)^\s*ADVERTISEMENT\s*$",
-        r"(?im)^\s*광고\s*$",
-    ]
-    block_patterns = [
-        r"(?is)\bFacebook\s+Twitter\s+LinkedIn.*$",
-        r"(?is)\bLike this:\s*Like Loading\.\.\..*$",
-        r"(?is)Loading Comments\.\.\..*$",
-        r"(?is)You must be logged in to post a comment\..*$",
-        r"(?is)관련 기사 더 보기.*$",
-        r"(?is)%d bloggers like this:.*$",
-    ]
-    out = normalize_inner_text(s)
-    for p in line_patterns:
-        out = re.sub(p, "", out)
-    out = re.sub(r"(?im)\b[\w\.-]+@[\w\.-]+\.\w+\b", "", out)
-    out = re.sub(r"(?im)\b\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}\b", "", out)
-    for p in block_patterns:
-        out = re.sub(p, "", out)
-    out = re.sub(r"\n{3,}", "\n\n", out).strip()
-    return clean_text(out)
+    source = normalize_inner_text(body_text)
+    if not source:
+        return ""
+
+    terms = _context_terms(title, description)
+    # Only remove obviously unrelated UI/utility lines when they don't match title context.
+    junk_hint = re.compile(
+        r"(?i)(login|sign in|sign up|newsletter|subscribe|cookie|privacy|terms|menu|home|copyright|all rights reserved)"
+        r"|(\b댓글\b|\b공유\b|\b좋아요\b|\b본문보기\b|\b기사원문\b)"
+    )
+    kept = []
+    for ln in source.splitlines():
+        line = clean_text(ln)
+        if not line:
+            continue
+        if len(line) <= 2:
+            continue
+        if not junk_hint.search(line):
+            kept.append(line)
+            continue
+        line_terms = set(re.findall(r"[0-9a-zA-Z가-힣]{2,}", line.lower()))
+        if terms and line_terms.intersection(terms):
+            kept.append(line)
+
+    if not kept:
+        kept = [clean_text(ln) for ln in source.splitlines() if clean_text(ln)]
+    return "\n".join(kept)
 
 
 def enforce_line_limit(text: str, limit: int) -> str:
@@ -126,7 +147,7 @@ def bulletize_lines(lines):
 
 
 def local_summary(title: str, description: str, content: str) -> str:
-    merged = " ".join(part for part in [clean_text(title), clean_text(description), strip_ui_noise(content)] if part)
+    merged = " ".join(part for part in [clean_text(title), clean_text(description), clean_text(content)] if part)
     if not merged:
         return "요약할 본문이 부족합니다."
     sentences = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", merged)
@@ -169,9 +190,9 @@ def normalize_bullet_output(text: str) -> str:
 
 def llm_core_summary(title: str, description: str, content: str) -> str:
     prompt = (
-        "아래 뉴스 본문(document.body.innerText 기준)을 한국어로 충실히 요약해줘.\n"
+        "아래 뉴스 본문(document.body.innerText 원문 기반, 최소 필터링 적용)을 한국어로 충실히 요약해줘.\n"
         "- 기사 핵심 사실/배경/영향 중심\n"
-        "- 사이트 UI 텍스트(버튼/메뉴/광고/댓글/뉴스레터/로그인), 기자명/리포터명, 이메일/전화번호는 제외\n"
+        "- 제목/설명 맥락과 관련이 약한 UI/유틸 텍스트는 무시\n"
         "- 6~10문장 내로 작성\n\n"
         f"제목: {title}\n"
         f"설명: {description}\n"
@@ -186,7 +207,7 @@ def llm_core_summary(title: str, description: str, content: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=40) as resp:
         out = json.loads(resp.read().decode("utf-8", errors="replace"))
-    txt = strip_ui_noise(out.get("output_text", "").strip())
+    txt = clean_text(out.get("output_text", "").strip())
     return txt
 
 
@@ -223,22 +244,22 @@ def llm_format_bullets(title: str, core_summary: str) -> str:
 
 
 def summarize(title: str, description: str, content: str) -> str:
-    # Pipeline: document.body.innerText -> noise removal -> first summary -> second bullet formatting
-    cleaned_source = strip_ui_noise(content)
-    if not cleaned_source:
+    # Pipeline: document.body.innerText -> minimal context filter -> first summary -> second bullet formatting
+    filtered_source = minimal_context_filter(title, description, content)
+    if not filtered_source:
         return local_summary(title, description, content)
     if OPENAI_API_KEY:
         try:
-            core = llm_core_summary(title, description, cleaned_source)
+            core = llm_core_summary(title, description, filtered_source)
             if not core:
-                return local_summary(title, description, cleaned_source)
+                return local_summary(title, description, filtered_source)
             bullets = llm_format_bullets(title, core)
             if bullets:
                 return bullets
             return local_summary(title, description, core)
         except Exception:
-            return local_summary(title, description, cleaned_source)
-    return local_summary(title, description, cleaned_source)
+            return local_summary(title, description, filtered_source)
+    return local_summary(title, description, filtered_source)
 
 
 def http_json(url: str, timeout: int = 20):
