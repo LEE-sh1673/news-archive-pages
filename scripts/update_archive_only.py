@@ -53,23 +53,40 @@ def clean_text(s: str) -> str:
     return s.strip(" -")
 
 
+def normalize_inner_text(s: str) -> str:
+    if not s:
+        return ""
+    s = html.unescape(s).replace("\r\n", "\n").replace("\r", "\n").replace("\xa0", " ")
+    s = re.sub(r"[ \t\f\v]+", " ", s)
+    lines = [ln.strip() for ln in s.splitlines()]
+    lines = [ln for ln in lines if ln]
+    return "\n".join(lines)
+
+
 def strip_ui_noise(s: str) -> str:
     if not s:
         return ""
-    patterns = [
+    line_patterns = [
         r"(?im)^\s*(기자|리포터|Reporter|By)\s*[:：].*$",
         r"(?im)^\s*이메일\s*[:：].*$",
         r"(?im)^\s*(문의|전화|Tel|Phone|Contact)\s*[:：].*$",
-        r"(?im)\b[\w\.-]+@[\w\.-]+\.\w+\b",
-        r"(?im)\b\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}\b",
-        r"(?is)\b광고\b.*$",
-        r"(?is)\bADVERTISEMENT\b.*$",
-        r"(?is)\b쿠키\b.*$",
-        r"(?is)\b로그인\b.*$",
-        r"(?is)\b회원가입\b.*$",
+        r"(?im)^\s*ADVERTISEMENT\s*$",
+        r"(?im)^\s*광고\s*$",
     ]
-    out = s
-    for p in patterns:
+    block_patterns = [
+        r"(?is)\bFacebook\s+Twitter\s+LinkedIn.*$",
+        r"(?is)\bLike this:\s*Like Loading\.\.\..*$",
+        r"(?is)Loading Comments\.\.\..*$",
+        r"(?is)You must be logged in to post a comment\..*$",
+        r"(?is)관련 기사 더 보기.*$",
+        r"(?is)%d bloggers like this:.*$",
+    ]
+    out = normalize_inner_text(s)
+    for p in line_patterns:
+        out = re.sub(p, "", out)
+    out = re.sub(r"(?im)\b[\w\.-]+@[\w\.-]+\.\w+\b", "", out)
+    out = re.sub(r"(?im)\b\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}\b", "", out)
+    for p in block_patterns:
         out = re.sub(p, "", out)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return clean_text(out)
@@ -206,21 +223,22 @@ def llm_format_bullets(title: str, core_summary: str) -> str:
 
 
 def summarize(title: str, description: str, content: str) -> str:
-    cleaned_content = strip_ui_noise(content)
-    if not cleaned_content:
+    # Pipeline: document.body.innerText -> noise removal -> first summary -> second bullet formatting
+    cleaned_source = strip_ui_noise(content)
+    if not cleaned_source:
         return local_summary(title, description, content)
     if OPENAI_API_KEY:
         try:
-            core = llm_core_summary(title, description, cleaned_content)
+            core = llm_core_summary(title, description, cleaned_source)
             if not core:
-                return local_summary(title, description, cleaned_content)
+                return local_summary(title, description, cleaned_source)
             bullets = llm_format_bullets(title, core)
             if bullets:
                 return bullets
             return local_summary(title, description, core)
         except Exception:
-            return local_summary(title, description, cleaned_content)
-    return local_summary(title, description, cleaned_content)
+            return local_summary(title, description, cleaned_source)
+    return local_summary(title, description, cleaned_source)
 
 
 def http_json(url: str, timeout: int = 20):
@@ -252,11 +270,19 @@ def http_text(url: str, timeout: int = 20):
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
-        charset = resp.headers.get_content_charset() or "utf-8"
-    try:
-        return raw.decode(charset, errors="replace")
-    except Exception:
-        return raw.decode("utf-8", errors="replace")
+        charset = resp.headers.get_content_charset()
+
+    candidates = []
+    if charset:
+        candidates.append(charset)
+    candidates.extend(["utf-8", "cp949", "euc-kr"])
+
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except Exception:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 class MainBodyExtractor(HTMLParser):
@@ -367,14 +393,14 @@ class BodyInnerTextExtractor(HTMLParser):
     def handle_data(self, data):
         if not self.in_body or self.skip_depth > 0:
             return
-        txt = clean_text(data)
+        txt = normalize_inner_text(data)
         if txt:
             self.parts.append(txt + " ")
 
     def text(self):
         raw = "".join(self.parts)
         raw = re.sub(r"\n{3,}", "\n\n", raw)
-        return clean_text(raw)
+        return normalize_inner_text(raw)
 
 
 def extract_body_inner_text(html_doc: str) -> str:
