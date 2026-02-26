@@ -226,6 +226,9 @@ def main() -> int:
                     "body": body,
                     "url": url,
                     "category": category,
+                    "article_published_at": published,
+                    "fetched_at": now.isoformat(),
+                    # legacy fields for backward compatibility
                     "published_at": published,
                     "archived_at": now.isoformat(),
                     "source": "NewsAPI",

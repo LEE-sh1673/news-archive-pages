@@ -43,10 +43,11 @@ function relativeTime(value) {
 
 function sortPosts(posts, sortKey) {
   const sorted = [...posts];
+  const fetchedOf = (x) => x.fetched_at || x.archived_at || x.article_published_at || x.published_at;
   if (sortKey === "latest") {
-    sorted.sort((a, b) => parseDate(b.published_at || b.archived_at) - parseDate(a.published_at || a.archived_at));
+    sorted.sort((a, b) => parseDate(fetchedOf(b)) - parseDate(fetchedOf(a)));
   } else if (sortKey === "oldest") {
-    sorted.sort((a, b) => parseDate(a.published_at || a.archived_at) - parseDate(b.published_at || b.archived_at));
+    sorted.sort((a, b) => parseDate(fetchedOf(a)) - parseDate(fetchedOf(b)));
   } else if (sortKey === "title") {
     sorted.sort((a, b) => (a.title || "").localeCompare(b.title || "", "ko"));
   } else if (sortKey === "category") {
@@ -83,7 +84,9 @@ function openDetail(id) {
 
   el.detailTitle.textContent = "";
   el.detailTitle.appendChild(a);
-  el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 생성 일자: ${post.published_at || post.archived_at || "-"}`;
+  const articlePublishedAt = post.article_published_at || post.published_at || "-";
+  const fetchedAt = post.fetched_at || post.archived_at || "-";
+  el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
   el.detailBody.textContent = post.body || post.summary || "";
 }
 
@@ -128,7 +131,9 @@ function renderList() {
 
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = `${relativeTime(p.published_at || p.archived_at)} | ${p.category || "-"}`;
+    const articlePublishedAt = p.article_published_at || p.published_at || "-";
+    const fetchedAt = p.fetched_at || p.archived_at || "-";
+    meta.textContent = `수집 ${relativeTime(fetchedAt)} | ${p.category || "-"} | 기사 생성일 ${articlePublishedAt}`;
 
     body.appendChild(title);
     body.appendChild(summary);

@@ -75,6 +75,15 @@ def main():
                         "body": sanitize(row.get("body"), "body"),
                         "url": sanitize(row.get("url"), "url"),
                         "category": sanitize(row.get("category"), "category"),
+                        "article_published_at": sanitize(
+                            row.get("article_published_at") or row.get("published_at"),
+                            "article_published_at",
+                        ),
+                        "fetched_at": sanitize(
+                            row.get("fetched_at") or row.get("archived_at"),
+                            "fetched_at",
+                        ),
+                        # keep legacy fields too
                         "published_at": sanitize(row.get("published_at"), "published_at"),
                         "archived_at": sanitize(row.get("archived_at"), "archived_at"),
                     }
@@ -87,7 +96,7 @@ def main():
             return 0
         print(f"WARN: source not found: {src}. Write empty dataset to {out}")
 
-    rows.sort(key=lambda x: x.get("published_at") or x.get("archived_at"), reverse=True)
+    rows.sort(key=lambda x: x.get("fetched_at") or x.get("archived_at"), reverse=True)
     os.makedirs(out.parent, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, separators=(",", ":"))
