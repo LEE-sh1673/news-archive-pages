@@ -16,7 +16,9 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Seoul")
 MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
-ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "8")))
+ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "40")))
+NEWS_PAGE_SIZE = max(20, min(100, int(os.environ.get("NEWS_PAGE_SIZE", "100"))))
+MAX_NEWS_PAGES = max(1, int(os.environ.get("MAX_NEWS_PAGES", "3")))
 MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
 MAX_SOURCE_CHARS = max(1000, int(os.environ.get("MAX_SOURCE_CHARS", "16000")))
 
@@ -48,6 +50,28 @@ def clean_text(s: str) -> str:
     s = re.sub(r"(?is)←.*$", "", s).strip()
     s = re.sub(r"(?is)→.*$", "", s).strip()
     return s.strip(" -")
+
+
+def strip_ui_noise(s: str) -> str:
+    if not s:
+        return ""
+    patterns = [
+        r"(?im)^\s*(기자|리포터|Reporter|By)\s*[:：].*$",
+        r"(?im)^\s*이메일\s*[:：].*$",
+        r"(?im)^\s*(문의|전화|Tel|Phone|Contact)\s*[:：].*$",
+        r"(?im)\b[\w\.-]+@[\w\.-]+\.\w+\b",
+        r"(?im)\b\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}\b",
+        r"(?is)\b광고\b.*$",
+        r"(?is)\bADVERTISEMENT\b.*$",
+        r"(?is)\b쿠키\b.*$",
+        r"(?is)\b로그인\b.*$",
+        r"(?is)\b회원가입\b.*$",
+    ]
+    out = s
+    for p in patterns:
+        out = re.sub(p, "", out)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return clean_text(out)
 
 
 def enforce_line_limit(text: str, limit: int) -> str:
@@ -84,9 +108,7 @@ def bulletize_lines(lines):
 
 
 def local_summary(title: str, description: str, content: str) -> str:
-    merged = " ".join(
-        part for part in [clean_text(title), clean_text(description), clean_text(content)] if part
-    )
+    merged = " ".join(part for part in [clean_text(title), clean_text(description), strip_ui_noise(content)] if part)
     if not merged:
         return "요약할 본문이 부족합니다."
     sentences = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", merged)
@@ -127,18 +149,40 @@ def normalize_bullet_output(text: str) -> str:
     return enforce_line_limit("\n".join(lines), MAX_SUMMARY_LINES)
 
 
-def llm_summary(title: str, description: str, content: str) -> str:
+def llm_core_summary(title: str, description: str, content: str) -> str:
     prompt = (
-        f"다음 뉴스 본문(document.body.innerText에서 추출된 텍스트)을 한국어 불릿 리스트로 요약해줘.\n"
-        f"- 전체 출력은 최대 {MAX_SUMMARY_LINES}줄\n"
-        "- 각 불릿은 반드시 1줄만 사용\n"
-        "- 각 불릿은 서로 독립된 완전한 요약 문장이어야 함\n"
-        "- 제목과 직접 연관된 핵심 내용만 남기고 노이즈(광고/네비/댓글 영역)는 제외\n"
-        "- 과장/추측 없이 사실 중심으로 정리\n"
-        "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
+        "아래 뉴스 본문(document.body.innerText 기준)을 한국어로 충실히 요약해줘.\n"
+        "- 기사 핵심 사실/배경/영향 중심\n"
+        "- 사이트 UI 텍스트(버튼/메뉴/광고/댓글/뉴스레터/로그인), 기자명/리포터명, 이메일/전화번호는 제외\n"
+        "- 6~10문장 내로 작성\n\n"
         f"제목: {title}\n"
         f"설명: {description}\n"
         f"본문: {content}\n"
+    )
+    payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=40) as resp:
+        out = json.loads(resp.read().decode("utf-8", errors="replace"))
+    txt = strip_ui_noise(out.get("output_text", "").strip())
+    return txt
+
+
+def llm_format_bullets(title: str, core_summary: str) -> str:
+    prompt = (
+        "아래 요약문을 한국어 불릿 리스트로 다시 정리해줘.\n"
+        f"- 전체 출력은 최대 {MAX_SUMMARY_LINES}줄\n"
+        "- 각 불릿은 반드시 1줄만 사용\n"
+        "- 각 불릿은 서로 독립된 완전한 요약 문장이어야 함\n"
+        "- 제목과 직접 연관된 핵심 내용만 포함\n"
+        "- 과장/추측 없이 사실 중심으로 정리\n"
+        "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
+        f"제목: {title}\n"
+        f"요약문: {core_summary}\n"
     )
     payload = {
         "model": OPENAI_MODEL,
@@ -157,16 +201,25 @@ def llm_summary(title: str, description: str, content: str) -> str:
     with urllib.request.urlopen(req, timeout=30) as resp:
         out = json.loads(resp.read().decode("utf-8", errors="replace"))
     txt = out.get("output_text", "").strip()
-    return normalize_bullet_output(txt) if txt else local_summary(title, description, content)
+    return normalize_bullet_output(txt)
 
 
 def summarize(title: str, description: str, content: str) -> str:
+    cleaned_content = strip_ui_noise(content)
+    if not cleaned_content:
+        return local_summary(title, description, content)
     if OPENAI_API_KEY:
         try:
-            return llm_summary(title, description, content)
+            core = llm_core_summary(title, description, cleaned_content)
+            if not core:
+                return local_summary(title, description, cleaned_content)
+            bullets = llm_format_bullets(title, core)
+            if bullets:
+                return bullets
+            return local_summary(title, description, core)
         except Exception:
-            return local_summary(title, description, content)
-    return local_summary(title, description, content)
+            return local_summary(title, description, cleaned_content)
+    return local_summary(title, description, cleaned_content)
 
 
 def http_json(url: str, timeout: int = 20):
@@ -334,21 +387,30 @@ def fetch_article_body(url: str) -> str:
         return ""
 
 
-def fetch_news(from_date: str, to_date: str, query: str, page_size: int = 12):
-    params = {
-        "q": query,
-        "language": "ko",
-        "sortBy": "publishedAt",
-        "from": from_date,
-        "to": to_date,
-        "pageSize": page_size,
-        "apiKey": NEWSAPI_KEY,
-    }
-    url = "https://newsapi.org/v2/everything?" + urllib.parse.urlencode(params)
-    data = http_json(url)
-    if data.get("status") != "ok":
-        raise RuntimeError(f"NewsAPI error: {data}")
-    return data.get("articles", [])
+def fetch_news(from_date: str, to_date: str, query: str):
+    all_articles = []
+    for page in range(1, MAX_NEWS_PAGES + 1):
+        params = {
+            "q": query,
+            "language": "ko",
+            "sortBy": "publishedAt",
+            "from": from_date,
+            "to": to_date,
+            "pageSize": NEWS_PAGE_SIZE,
+            "page": page,
+            "apiKey": NEWSAPI_KEY,
+        }
+        url = "https://newsapi.org/v2/everything?" + urllib.parse.urlencode(params)
+        data = http_json(url)
+        if data.get("status") != "ok":
+            raise RuntimeError(f"NewsAPI error: {data}")
+        articles = data.get("articles", [])
+        if not articles:
+            break
+        all_articles.extend(articles)
+        if len(articles) < NEWS_PAGE_SIZE:
+            break
+    return all_articles
 
 
 def make_id(url: str, title: str, published_at: str) -> str:
@@ -441,8 +503,8 @@ def main() -> int:
             content = clean_text(a.get("content", ""))
             extracted = fetch_article_body(url)
             published = clean_text(a.get("publishedAt", ""))
-            body = extracted or content or desc
-            summary = summarize(title, desc, body)
+            body_raw = extracted or content or desc
+            summary = summarize(title, desc, body_raw)
             entries.append(
                 {
                     "id": make_id(url, title, published),
@@ -450,7 +512,7 @@ def main() -> int:
                     "summary": summary,
                     # Detail view body should show summarized bullet content.
                     "body": summary,
-                    "scraped_body": body,
+                    "scraped_body": body_raw,
                     "url": url,
                     "category": category,
                     "article_published_at": published,
