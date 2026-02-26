@@ -1,6 +1,6 @@
 :root {
   --bg: #f6f6ef;
-  --header: #ff6600;
+  --header: #1f2023;
   --text: #1f2937;
   --muted: #6b7280;
   --line: #dfd8c6;
@@ -22,7 +22,7 @@ body {
   top: 0;
   z-index: 10;
   background: var(--header);
-  border-bottom: 1px solid #dc5a00;
+  border-bottom: 1px solid #2d2f34;
 }
 
 .topbar-inner {
@@ -34,6 +34,7 @@ body {
 h1 {
   margin: 0;
   font-size: 22px;
+  color: #fff;
 }
 
 .container {
