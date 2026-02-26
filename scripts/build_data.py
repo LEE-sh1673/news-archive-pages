@@ -71,22 +71,11 @@ def make_bullet_summary(text: str, max_lines: int = 24) -> str:
     for s in sents:
         if len(out) >= max_lines:
             break
-        if len(s) <= 140:
-            out.append(f"- {s}")
-            continue
-        head = s[:140]
-        split_at = head.rfind(" ")
-        if split_at < 60:
-            split_at = 140
+        chunk = s[:120]
+        split_at = chunk.rfind(" ")
+        if split_at < 40:
+            split_at = len(chunk)
         out.append(f"- {s[:split_at].strip()}")
-        tail = s[split_at:].strip()
-        while tail and len(out) < max_lines:
-            chunk = tail[:120]
-            split2 = chunk.rfind(" ")
-            if split2 < 50:
-                split2 = len(chunk)
-            out.append(f"  - {tail[:split2].strip()}")
-            tail = tail[split2:].strip()
     return "\n".join(out[:max_lines])
 
 

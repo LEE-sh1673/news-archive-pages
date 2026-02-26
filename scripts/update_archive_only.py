@@ -98,15 +98,8 @@ def local_summary(title: str, description: str, content: str) -> str:
     for s in sentences:
         if len(bullets) >= MAX_SUMMARY_LINES:
             break
-        chunks = split_long_text(s, chunk_size=140)
-        if len(chunks) == 1:
-            bullets.append(f"- {chunks[0]}")
-        else:
-            bullets.append(f"- {chunks[0]}")
-            for sub in chunks[1:]:
-                if len(bullets) >= MAX_SUMMARY_LINES:
-                    break
-                bullets.append(f"  - {sub}")
+        chunks = split_long_text(s, chunk_size=120)
+        bullets.append(f"- {chunks[0]}")
     return enforce_line_limit("\n".join(bullets), MAX_SUMMARY_LINES)
 
 
@@ -120,23 +113,22 @@ def normalize_bullet_output(text: str) -> str:
     else:
         fixed = []
         for ln in lines:
-            stripped = ln.lstrip()
-            indent = "  " if ln.startswith(("  -", "\t-")) else ""
-            if stripped.startswith("-"):
-                fixed.append(f"{indent}- {stripped.lstrip('-').strip()}")
-            else:
-                fixed.append(f"{indent}- {stripped}")
+            stripped = clean_text(ln.lstrip("- ").strip())
+            if not stripped:
+                continue
+            # Force single-line top-level bullet only.
+            fixed.append(f"- {split_long_text(stripped, chunk_size=120)[0]}")
         lines = fixed
     return enforce_line_limit("\n".join(lines), MAX_SUMMARY_LINES)
 
 
 def llm_summary(title: str, description: str, content: str) -> str:
     prompt = (
-        f"다음 뉴스 본문을 한국어 불릿 리스트로 요약해줘.\n"
+        f"다음 뉴스 본문(document.body.innerText에서 추출된 텍스트)을 한국어 불릿 리스트로 요약해줘.\n"
         f"- 전체 출력은 최대 {MAX_SUMMARY_LINES}줄\n"
-        "- 각 불릿은 1~2줄 내로 유지\n"
-        "- 본문이 길면 하위 불릿(두 칸 들여쓰기 + '-') 사용\n"
-        "- 과장/추측 없이 사실 중심, 전체 흐름이 드러나게 정리\n"
+        "- 각 불릿은 반드시 1줄만 사용\n"
+        "- 제목과 직접 연관된 핵심 내용만 남기고 노이즈(광고/네비/댓글 영역)는 제외\n"
+        "- 과장/추측 없이 사실 중심으로 정리\n"
         "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
         f"제목: {title}\n"
         f"설명: {description}\n"
@@ -271,11 +263,66 @@ def extract_main_body(html_doc: str) -> str:
     return clean_text(body)[:MAX_SOURCE_CHARS]
 
 
+class BodyInnerTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_body = False
+        self.skip_depth = 0
+        self.parts = []
+        self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
+        self.block_tags = {"p", "div", "article", "section", "br", "li", "h1", "h2", "h3", "h4"}
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t == "body":
+            self.in_body = True
+        if not self.in_body:
+            return
+        if t in self.skip_tags:
+            self.skip_depth += 1
+        if t in self.block_tags:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t == "body":
+            self.in_body = False
+        if not self.in_body:
+            return
+        if t in self.skip_tags and self.skip_depth > 0:
+            self.skip_depth -= 1
+        if t in self.block_tags:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self.in_body or self.skip_depth > 0:
+            return
+        txt = clean_text(data)
+        if txt:
+            self.parts.append(txt + " ")
+
+    def text(self):
+        raw = "".join(self.parts)
+        raw = re.sub(r"\n{3,}", "\n\n", raw)
+        return clean_text(raw)
+
+
+def extract_body_inner_text(html_doc: str) -> str:
+    p = BodyInnerTextExtractor()
+    p.feed(html_doc)
+    return p.text()[:MAX_SOURCE_CHARS]
+
+
 def fetch_article_body(url: str) -> str:
     if not url:
         return ""
     try:
         html_doc = http_text(url, timeout=20)
+        # 1) Use whole document.body inner text as requested.
+        whole = extract_body_inner_text(html_doc)
+        if whole:
+            return whole
+        # 2) Fallback: targeted body candidates.
         return extract_main_body(html_doc)
     except Exception:
         return ""
