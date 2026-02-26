@@ -8,6 +8,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -17,6 +18,7 @@ MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
 ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "8")))
 MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
+MAX_SOURCE_CHARS = max(1000, int(os.environ.get("MAX_SOURCE_CHARS", "16000")))
 
 
 def fail(msg: str) -> int:
@@ -108,6 +110,96 @@ def http_json(url: str, timeout: int = 20):
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = resp.read().decode("utf-8", errors="replace")
     return json.loads(data)
+
+
+def http_text(url: str, timeout: int = 20):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            )
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read()
+        charset = resp.headers.get_content_charset() or "utf-8"
+    try:
+        return raw.decode(charset, errors="replace")
+    except Exception:
+        return raw.decode("utf-8", errors="replace")
+
+
+class MainBodyExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.stack = []
+        self.skip_depth = 0
+        self.candidates = []
+        self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        attrs_map = {k.lower(): (v or "") for k, v in attrs}
+        node = {"tag": t, "attrs": attrs_map, "parts": []}
+        self.stack.append(node)
+        if t in self.skip_tags:
+            self.skip_depth += 1
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if not self.stack:
+            return
+        node = self.stack.pop()
+        text = clean_text(" ".join(node["parts"]))
+        if text:
+            priority = self._priority(node["attrs"])
+            if priority is not None:
+                self.candidates.append((priority, len(text), text))
+            if self.stack:
+                self.stack[-1]["parts"].append(text)
+        if t in self.skip_tags and self.skip_depth > 0:
+            self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if self.skip_depth > 0 or not self.stack:
+            return
+        txt = clean_text(data)
+        if txt:
+            self.stack[-1]["parts"].append(txt)
+
+    @staticmethod
+    def _priority(attrs):
+        itemprop = attrs.get("itemprop", "").strip().lower()
+        if itemprop == "articlebody":
+            return 0
+        idv = attrs.get("id", "").lower()
+        cls = attrs.get("class", "").lower()
+        merged = f"{idv} {cls}"
+        if re.search(r"(contents?|body|article[-_ ]?body|post[-_ ]?body|entry[-_ ]?content)", merged):
+            return 1
+        return None
+
+
+def extract_main_body(html_doc: str) -> str:
+    parser = MainBodyExtractor()
+    parser.feed(html_doc)
+    if not parser.candidates:
+        return ""
+    parser.candidates.sort(key=lambda x: (x[0], -x[1]))
+    body = parser.candidates[0][2]
+    return clean_text(body)[:MAX_SOURCE_CHARS]
+
+
+def fetch_article_body(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        html_doc = http_text(url, timeout=20)
+        return extract_main_body(html_doc)
+    except Exception:
+        return ""
 
 
 def fetch_news(from_date: str, to_date: str, query: str, page_size: int = 12):
@@ -215,8 +307,9 @@ def main() -> int:
             url = (a.get("url") or "").strip()
             desc = clean_text(a.get("description", ""))
             content = clean_text(a.get("content", ""))
+            extracted = fetch_article_body(url)
             published = clean_text(a.get("publishedAt", ""))
-            body = content or desc
+            body = extracted or content or desc
             summary = summarize(title, desc, body)
             entries.append(
                 {
