@@ -220,7 +220,7 @@ class MainBodyExtractor(HTMLParser):
         node = self.stack.pop()
         text = clean_text(" ".join(node["parts"]))
         if text:
-            priority = self._priority(node["attrs"])
+            priority = self._priority(node["tag"], node["attrs"])
             if priority is not None:
                 self.candidates.append((priority, len(text), text))
             if self.stack:
@@ -236,15 +236,18 @@ class MainBodyExtractor(HTMLParser):
             self.stack[-1]["parts"].append(txt)
 
     @staticmethod
-    def _priority(attrs):
+    def _priority(tag, attrs):
         itemprop = attrs.get("itemprop", "").strip().lower()
         if itemprop == "articlebody":
             return 0
-        idv = attrs.get("id", "").lower()
         cls = attrs.get("class", "").lower()
+        if tag == "div" and "contents" in cls:
+            # Explicitly include div[class*=contents] as a strong candidate.
+            return 1
+        idv = attrs.get("id", "").lower()
         merged = f"{idv} {cls}"
         if re.search(r"(contents?|body|article[-_ ]?body|post[-_ ]?body|entry[-_ ]?content)", merged):
-            return 1
+            return 2
         return None
 
 
@@ -254,7 +257,17 @@ def extract_main_body(html_doc: str) -> str:
     if not parser.candidates:
         return ""
     parser.candidates.sort(key=lambda x: (x[0], -x[1]))
-    body = parser.candidates[0][2]
+    primary = parser.candidates[0][2]
+
+    # Also include texts from div[class*=contents] candidates when available.
+    extras = []
+    for pri, _, txt in parser.candidates[1:]:
+        if pri == 1 and txt and txt not in primary:
+            extras.append(txt)
+
+    body = primary
+    if extras:
+        body = f"{primary}\n" + "\n".join(extras)
     return clean_text(body)[:MAX_SOURCE_CHARS]
 
 
@@ -382,7 +395,9 @@ def main() -> int:
                     "id": make_id(url, title, published),
                     "title": title,
                     "summary": summary,
-                    "body": body,
+                    # Detail view body should show summarized bullet content.
+                    "body": summary,
+                    "scraped_body": body,
                     "url": url,
                     "category": category,
                     "article_published_at": published,

@@ -52,6 +52,44 @@ def sanitize(text, field=""):
     return s
 
 
+def looks_like_bullets(text: str) -> bool:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    if not lines:
+        return False
+    return lines[0].startswith("-")
+
+
+def make_bullet_summary(text: str, max_lines: int = 24) -> str:
+    text = sanitize(text, "body")
+    if not text:
+        return ""
+    sents = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", text)
+    sents = [s.strip(" -") for s in sents if s and s.strip(" -")]
+    if not sents:
+        sents = [text]
+    out = []
+    for s in sents:
+        if len(out) >= max_lines:
+            break
+        if len(s) <= 140:
+            out.append(f"- {s}")
+            continue
+        head = s[:140]
+        split_at = head.rfind(" ")
+        if split_at < 60:
+            split_at = 140
+        out.append(f"- {s[:split_at].strip()}")
+        tail = s[split_at:].strip()
+        while tail and len(out) < max_lines:
+            chunk = tail[:120]
+            split2 = chunk.rfind(" ")
+            if split2 < 50:
+                split2 = len(chunk)
+            out.append(f"  - {tail[:split2].strip()}")
+            tail = tail[split2:].strip()
+    return "\n".join(out[:max_lines])
+
+
 def main():
     src = Path(os.environ.get("SOURCE_JSONL", str(DEFAULT_SRC))).expanduser()
     out = Path(os.environ.get("OUTPUT_JSON", str(DEFAULT_OUT))).expanduser()
@@ -67,12 +105,27 @@ def main():
                     row = json.loads(line)
                 except Exception:
                     continue
+                summary = sanitize(row.get("summary"), "summary")
+                body = sanitize(row.get("body"), "body")
+                scraped_body = sanitize(row.get("scraped_body"), "body")
+
+                # Detail view should display summarized bullet body.
+                if looks_like_bullets(summary):
+                    body = summary
+                else:
+                    source_for_summary = scraped_body or body or summary
+                    bullet = make_bullet_summary(source_for_summary)
+                    if bullet:
+                        summary = bullet
+                        body = bullet
+
                 rows.append(
                     {
                         "id": sanitize(row.get("id"), "id"),
                         "title": sanitize(row.get("title"), "title"),
-                        "summary": sanitize(row.get("summary"), "summary"),
-                        "body": sanitize(row.get("body"), "body"),
+                        "summary": summary,
+                        "body": body,
+                        "scraped_body": scraped_body,
                         "url": sanitize(row.get("url"), "url"),
                         "category": sanitize(row.get("category"), "category"),
                         "article_published_at": sanitize(
