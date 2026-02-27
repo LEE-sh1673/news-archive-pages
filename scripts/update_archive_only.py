@@ -270,7 +270,7 @@ def summarize(title: str, description: str, content: str) -> str:
     return local_summary(title, description, filtered_source)
 
 
-def format_crawled_body(title: str, description: str, body_text: str) -> str:
+def _fallback_format_crawled_body(title: str, description: str, body_text: str) -> str:
     filtered = minimal_context_filter(title, description, body_text)
     if not filtered:
         return ""
@@ -380,6 +380,29 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
 
     fallback = _fallback_ai_summary(title, source)
     return fallback if _has_readable_content(fallback) else "요약할 수 없는 내용입니다"
+
+
+def format_crawled_body(title: str, description: str, body_text: str) -> str:
+    source = minimal_context_filter(title, description, body_text)
+    if not _has_readable_content(source):
+        return ""
+
+    prompt = (
+        "제공된 기사 원문 내용을 불릿 리스트 형식으로 포맷팅해줘.\n"
+        "- 기사 원문 기반 핵심 내용만 유지\n"
+        "- 노이즈(UI/광고/공유/댓글 유도 문구)는 제거\n"
+        f"- 불릿은 최대 {MAX_SUMMARY_LINES}줄\n"
+        "- 각 불릿은 1줄의 완결된 문장\n"
+        "- 출력은 불릿만 작성\n\n"
+        f"기사 제목: {title}\n"
+        f"기사 설명: {description}\n"
+        f"기사 원문: {source}\n"
+    )
+    out = run_codex_cli_summary(prompt)
+    bullets = normalize_bullet_output(out)
+    if bullets:
+        return bullets
+    return _fallback_format_crawled_body(title, description, body_text)
 
 
 def http_json(url: str, timeout: int = 20):
