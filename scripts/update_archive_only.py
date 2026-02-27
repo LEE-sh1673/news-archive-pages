@@ -275,15 +275,7 @@ def _fallback_format_crawled_body(title: str, description: str, body_text: str) 
     if not filtered:
         return ""
     lines = [clean_text(ln) for ln in filtered.splitlines() if clean_text(ln)]
-    dedup = []
-    seen = set()
-    for ln in lines:
-        key = ln.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        dedup.append(ln)
-    return "\n".join(f"- {ln}" for ln in dedup)
+    return "\n".join(f"- {ln}" for ln in lines)
 
 
 def _has_readable_content(text: str) -> bool:
@@ -383,25 +375,8 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
 
 
 def format_crawled_body(title: str, description: str, body_text: str) -> str:
-    source = minimal_context_filter(title, description, body_text)
-    if not _has_readable_content(source):
-        return ""
-
-    prompt = (
-        "제공된 기사 원문 내용을 불릿 리스트 형식으로 포맷팅해줘.\n"
-        "- 기사 원문 기반 핵심 내용만 유지\n"
-        "- 노이즈(UI/광고/공유/댓글 유도 문구)는 제거\n"
-        f"- 불릿은 최대 {MAX_SUMMARY_LINES}줄\n"
-        "- 각 불릿은 1줄의 완결된 문장\n"
-        "- 출력은 불릿만 작성\n\n"
-        f"기사 제목: {title}\n"
-        f"기사 설명: {description}\n"
-        f"기사 원문: {source}\n"
-    )
-    out = run_codex_cli_summary(prompt)
-    bullets = normalize_bullet_output(out)
-    if bullets:
-        return bullets
+    # Keep display format (bulleted lines), but do not summarize article body.
+    # Use full filtered source text (noise removed) as-is.
     return _fallback_format_crawled_body(title, description, body_text)
 
 
