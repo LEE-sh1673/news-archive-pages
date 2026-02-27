@@ -1103,17 +1103,19 @@ def main() -> int:
 
     it_query = "(AI OR 반도체 OR 클라우드 OR 빅테크 OR IT OR 소프트웨어)"
     job_query = "(취업 OR 채용 OR 고용 OR 노동시장 OR 실업)"
+    eco_query = "(경제 OR 물가 OR 금리 OR 환율 OR 증시 OR 금융 OR 산업)"
 
     it_articles = unique_articles(safe_fetch_news(from_date, to_date, it_query, "IT"), ITEM_LIMIT_PER_CATEGORY)
     job_articles = unique_articles(safe_fetch_news(from_date, to_date, job_query, "JOB"), ITEM_LIMIT_PER_CATEGORY)
+    eco_articles = unique_articles(safe_fetch_news(from_date, to_date, eco_query, "ECO"), ITEM_LIMIT_PER_CATEGORY)
 
-    if not it_articles and not job_articles:
+    if not it_articles and not job_articles and not eco_articles:
         # Do not fail the workflow on transient upstream issues.
-        print("WARN: no articles fetched for both categories; keeping existing archive.", file=sys.stderr)
+        print("WARN: no articles fetched for all categories; keeping existing archive.", file=sys.stderr)
         return 0
 
     entries = []
-    for category, arr in [("IT", it_articles), ("취업", job_articles)]:
+    for category, arr in [("IT", it_articles), ("취업", job_articles), ("경제", eco_articles)]:
         for a in arr:
             title = clean_text(a.get("title", ""))
             url = (a.get("url") or "").strip()

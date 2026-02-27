@@ -191,7 +191,23 @@ h1 a {
 .callout-text {
   font-size: 14px;
   line-height: 1.6;
-  white-space: pre-line;
+}
+
+.callout-text p {
+  margin: 0 0 8px;
+}
+
+.callout-text p:last-child {
+  margin-bottom: 0;
+}
+
+.callout-text ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.callout-text li {
+  margin: 4px 0;
 }
 
 .detail-thumb {

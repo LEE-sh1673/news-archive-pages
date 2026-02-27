@@ -53,6 +53,48 @@ function bulletTextToHtml(text) {
   return `<ul>${items.join("")}</ul>`;
 }
 
+function aiSummaryToHtml(text) {
+  const rawLines = String(text || "")
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (rawLines.length === 0) return "<p>요약할 수 없는 내용입니다.</p>";
+
+  let title = "";
+  let takeaway = "";
+  const points = [];
+
+  for (const line of rawLines) {
+    if (line.startsWith("제목:")) {
+      title = line.replace(/^제목:\s*/, "").trim();
+      continue;
+    }
+    if (line.startsWith("핵심 요약:")) {
+      takeaway = line.replace(/^핵심 요약:\s*/, "").trim();
+      continue;
+    }
+    if (line.startsWith("- 주요 포인트:")) {
+      const p = line.replace(/^\-\s*주요 포인트:\s*/, "").trim();
+      if (p) points.push(p);
+      continue;
+    }
+    if (line.startsWith("주요 포인트:")) {
+      const p = line.replace(/^주요 포인트:\s*/, "").trim();
+      if (p) points.push(p);
+    }
+  }
+
+  const parts = [];
+  if (title) parts.push(`<p><strong>제목:</strong> ${escapeHtml(title)}</p>`);
+  if (takeaway) parts.push(`<p><strong>핵심 요약:</strong> ${escapeHtml(takeaway)}</p>`);
+  if (points.length > 0) {
+    const items = points.map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+    parts.push(`<p><strong>주요 포인트</strong></p><ul>${items}</ul>`);
+  }
+  if (parts.length === 0) return `<p>${escapeHtml(rawLines.join(" "))}</p>`;
+  return parts.join("");
+}
+
 function parseDate(value) {
   const d = new Date(value || 0);
   return Number.isNaN(d.getTime()) ? new Date(0) : d;
@@ -135,7 +177,7 @@ function openDetail(id) {
   const articlePublishedAt = post.article_published_at || post.published_at || "-";
   const fetchedAt = post.fetched_at || post.archived_at || "-";
   el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
-  el.detailAiSummary.textContent = post.ai_summary || "요약할 수 없는 내용입니다";
+  el.detailAiSummary.innerHTML = aiSummaryToHtml(post.ai_summary || "요약할 수 없는 내용입니다");
   if (post.thumbnail) {
     el.detailThumbnail.src = post.thumbnail;
     el.detailThumbnail.classList.remove("hidden");
