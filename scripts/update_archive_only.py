@@ -331,6 +331,7 @@ NOISE_PATTERNS = [
     re.compile(r"(?im)\b\d{2,4}[-.\s]?\d{3,4}[-.\s]?\d{4}\b"),
     re.compile(r"(?i)\b(댓글|공유|좋아요|기사원문|원문보기|관련 기사|관련기사)\b"),
 ]
+JP_RE = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
 
 
 def filter_article_paragraphs(paragraphs):
@@ -338,6 +339,8 @@ def filter_article_paragraphs(paragraphs):
     for p in paragraphs:
         line = clean_text(p)
         if not line:
+            continue
+        if JP_RE.search(line):
             continue
         if len(line) < 10:
             continue
@@ -375,11 +378,11 @@ class PriorityPExtractor(HTMLParser):
             step = 2
 
         if step:
-            self.container_stack.append({"tag": t, "step": step, "paragraphs": []})
+            self.container_stack.append({"tag": t, "step": step, "paragraphs": [], "text_parts": []})
             if step == 2:
                 self.pending_article_comment = False
         else:
-            self.container_stack.append({"tag": t, "step": 0, "paragraphs": None})
+            self.container_stack.append({"tag": t, "step": 0, "paragraphs": None, "text_parts": None})
 
         if t == "p" and self._current_target() is not None:
             self.current_p_parts = []
@@ -403,7 +406,9 @@ class PriorityPExtractor(HTMLParser):
             return
         node = self.container_stack.pop()
         if node["step"] in {1, 2}:
-            paragraphs = filter_article_paragraphs(node["paragraphs"])
+            raw_lines = [clean_text(x) for x in normalize_inner_text(" ".join(node["text_parts"])).splitlines() if clean_text(x)]
+            base = node["paragraphs"] if node["paragraphs"] else raw_lines
+            paragraphs = filter_article_paragraphs(base)
             if paragraphs:
                 text = "\n".join(paragraphs)[:MAX_SOURCE_CHARS]
                 candidate = (len(text), text)
@@ -415,6 +420,11 @@ class PriorityPExtractor(HTMLParser):
     def handle_data(self, data):
         if self.skip_depth > 0:
             return
+        target = self._current_target()
+        if target is not None:
+            raw = normalize_inner_text(data)
+            if raw:
+                target["text_parts"].append(raw)
         if self.current_p_parts is None:
             return
         txt = clean_text(data)
@@ -462,6 +472,7 @@ class BodyPExtractor(HTMLParser):
         self.in_p = False
         self.current_p_parts = []
         self.paragraphs = []
+        self.body_text_parts = []
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
@@ -499,7 +510,12 @@ class BodyPExtractor(HTMLParser):
             self.in_p = False
 
     def handle_data(self, data):
-        if not self.in_body or self.skip_depth > 0 or not self.in_p:
+        if not self.in_body or self.skip_depth > 0:
+            return
+        raw = normalize_inner_text(data)
+        if raw:
+            self.body_text_parts.append(raw)
+        if not self.in_p:
             return
         txt = clean_text(data)
         if txt:
@@ -513,6 +529,59 @@ def extract_body_p_text(html_doc: str) -> str:
     return "\n".join(lines)[:MAX_SOURCE_CHARS]
 
 
+class ArticleBodyInnerTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.skip_depth = 0
+        self.skip_tags = {"script", "style", "noscript", "iframe", "svg", "img"}
+        self.stack = []
+        self.candidates = []
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        attrs_map = {k.lower(): (v or "") for k, v in attrs}
+        if t in self.skip_tags:
+            self.skip_depth += 1
+        is_target = False
+        if t in {"div", "article"}:
+            itemprop = attrs_map.get("itemprop", "").strip().lower()
+            idv = attrs_map.get("id", "").strip().lower()
+            is_target = itemprop == "articlebody" or idv == "articlebody"
+        self.stack.append({"tag": t, "is_target": is_target, "parts": []})
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if not self.stack:
+            return
+        node = self.stack.pop()
+        text = normalize_inner_text(" ".join(node["parts"]))
+        if node["is_target"] and text:
+            lines = filter_article_paragraphs([clean_text(x) for x in text.splitlines()])
+            if lines:
+                val = "\n".join(lines)[:MAX_SOURCE_CHARS]
+                self.candidates.append((len(val), val))
+        if self.stack and text:
+            self.stack[-1]["parts"].append(text)
+        if t in self.skip_tags and self.skip_depth > 0:
+            self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if self.skip_depth > 0 or not self.stack:
+            return
+        txt = normalize_inner_text(data)
+        if txt:
+            self.stack[-1]["parts"].append(txt)
+
+
+def extract_articlebody_inner_text(html_doc: str) -> str:
+    p = ArticleBodyInnerTextExtractor()
+    p.feed(html_doc)
+    if not p.candidates:
+        return ""
+    p.candidates.sort(key=lambda x: -x[0])
+    return p.candidates[0][1]
+
+
 def fetch_article_body(url: str) -> str:
     if not url:
         return ""
@@ -520,11 +589,14 @@ def fetch_article_body(url: str) -> str:
         html_doc = http_text(url, timeout=20)
         # 1) <div|article itemprop="articleBody" or id="articleBody">
         # 2) section|div preceded by <!-- 기사 본문 -->
-        # 3) fallback to document.body.innerText
+        # 3) fallback to document.body innerText p-only, then articleBody innerText
         priority = extract_priority_p_text(html_doc)
         if priority:
             return priority
-        return extract_body_p_text(html_doc)
+        body_p = extract_body_p_text(html_doc)
+        if body_p:
+            return body_p
+        return extract_articlebody_inner_text(html_doc)
     except Exception:
         return ""
 
