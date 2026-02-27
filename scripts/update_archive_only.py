@@ -899,11 +899,11 @@ def main() -> int:
             title = clean_text(a.get("title", ""))
             url = (a.get("url") or "").strip()
             desc = clean_text(a.get("description", ""))
-            content = clean_text(a.get("content", ""))
             extracted = fetch_article_body(url)
             published = clean_text(a.get("publishedAt", ""))
             rid = make_id(url, title, published)
-            body_raw = extracted or content or desc
+            # Keep post original body sourced from fetch_article_body(url).
+            body_raw = extracted
             # AS-IS: crawl -> noise removal -> summarize -> formatting
             # summary = summarize(title, desc, body_raw)
             # TO-BE: crawl -> noise removal -> formatting
