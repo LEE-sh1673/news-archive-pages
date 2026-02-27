@@ -1,14 +1,12 @@
 name: Sync News And Deploy Pages
 
 on:
-  schedule:
-    - cron: "0 */3 * * *"
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -28,62 +26,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run Codex preflight
-        id: run_codex
-        uses: openai/codex-action@v1
-        with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt: |
-            Validate Codex is available in this GitHub runner.
-            Respond with exactly: READY
-          output-file: codex-preflight.txt
-          safety-strategy: drop-sudo
-          sandbox: read-only
-          codex-args: '["--skip-git-repo-check"]'
-
-      - name: Verify Codex preflight output
-        run: |
-          test -f codex-preflight.txt
-          grep -q "READY" codex-preflight.txt
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Update archive data
-        run: python3 scripts/update_archive_only.py
-        env:
-          NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-4.1-mini
-          TIMEZONE: Asia/Seoul
-          ARCHIVE_PATH: data/news_archive.jsonl
-          ITEM_LIMIT_PER_CATEGORY: "8"
+      - name: Validate source archive
+        run: |
+          test -f data/news_archive.jsonl
 
       - name: Build data
         run: python3 scripts/build_data.py
         env:
           SOURCE_JSONL: data/news_archive.jsonl
           OUTPUT_JSON: docs/data/news_archive.json
-
-      - name: Commit data changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data/news_archive.json
-          git add docs/assets/thumbs 2>/dev/null || true
-          if git diff --cached --quiet; then
-            echo "No data changes to commit."
-          else
-            git commit -m "chore: auto update news archive data"
-            # Handle non-fast-forward races with rebase + retry.
-            for i in 1 2 3; do
-              git pull --rebase origin main && git push origin HEAD:main && break
-              echo "Push retry ${i}/3 failed; retrying..."
-              sleep 5
-            done
-          fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
