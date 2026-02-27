@@ -436,6 +436,8 @@ class PriorityPExtractor(HTMLParser):
         self.current_p_parts = None
         self.candidates_step1 = []
         self.candidates_step2 = []
+        self.found_step1_target = False
+        self.found_step2_target = False
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
@@ -452,11 +454,15 @@ class PriorityPExtractor(HTMLParser):
             step = 2
 
         if step:
-            self.container_stack.append({"tag": t, "step": step, "paragraphs": [], "text_parts": []})
+            self.container_stack.append({"tag": t, "step": step, "paragraphs": []})
+            if step == 1:
+                self.found_step1_target = True
+            else:
+                self.found_step2_target = True
             if step == 2:
                 self.pending_article_comment = False
         else:
-            self.container_stack.append({"tag": t, "step": 0, "paragraphs": None, "text_parts": None})
+            self.container_stack.append({"tag": t, "step": 0, "paragraphs": None})
 
         if t == "p" and self._current_target() is not None:
             self.current_p_parts = []
@@ -480,9 +486,7 @@ class PriorityPExtractor(HTMLParser):
             return
         node = self.container_stack.pop()
         if node["step"] in {1, 2}:
-            raw_lines = [clean_text(x) for x in normalize_inner_text(" ".join(node["text_parts"])).splitlines() if clean_text(x)]
-            base = node["paragraphs"] if node["paragraphs"] else raw_lines
-            paragraphs = filter_article_paragraphs(base)
+            paragraphs = filter_article_paragraphs(node["paragraphs"])
             if paragraphs:
                 text = "\n".join(paragraphs)[:MAX_SOURCE_CHARS]
                 candidate = (len(text), text)
@@ -494,11 +498,6 @@ class PriorityPExtractor(HTMLParser):
     def handle_data(self, data):
         if self.skip_depth > 0:
             return
-        target = self._current_target()
-        if target is not None:
-            raw = normalize_inner_text(data)
-            if raw:
-                target["text_parts"].append(raw)
         if self.current_p_parts is None:
             return
         txt = clean_text(data)
@@ -525,16 +524,16 @@ class PriorityPExtractor(HTMLParser):
         return itemprop == "articlebody" or idv == "articlebody"
 
 
-def extract_priority_p_text(html_doc: str) -> str:
+def extract_priority_p_result(html_doc: str):
     p = PriorityPExtractor()
     p.feed(html_doc)
     if p.candidates_step1:
         p.candidates_step1.sort(key=lambda x: -x[0])
-        return p.candidates_step1[0][1]
-    if p.candidates_step2:
+        return p.candidates_step1[0][1], p.found_step1_target, p.found_step2_target
+    if not p.found_step1_target and p.candidates_step2:
         p.candidates_step2.sort(key=lambda x: -x[0])
-        return p.candidates_step2[0][1]
-    return ""
+        return p.candidates_step2[0][1], p.found_step1_target, p.found_step2_target
+    return "", p.found_step1_target, p.found_step2_target
 
 
 class BodyPExtractor(HTMLParser):
@@ -546,7 +545,6 @@ class BodyPExtractor(HTMLParser):
         self.in_p = False
         self.current_p_parts = []
         self.paragraphs = []
-        self.body_text_parts = []
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
@@ -586,9 +584,6 @@ class BodyPExtractor(HTMLParser):
     def handle_data(self, data):
         if not self.in_body or self.skip_depth > 0:
             return
-        raw = normalize_inner_text(data)
-        if raw:
-            self.body_text_parts.append(raw)
         if not self.in_p:
             return
         txt = clean_text(data)
@@ -664,9 +659,14 @@ def fetch_article_body(url: str) -> str:
         # 1) <div|article itemprop="articleBody" or id="articleBody">
         # 2) section|div preceded by <!-- 기사 본문 -->
         # 3) fallback to document.body innerText p-only, then articleBody innerText
-        priority = extract_priority_p_text(html_doc)
+        priority, found_step1, found_step2 = extract_priority_p_result(html_doc)
         if priority:
             return priority
+        if found_step1 or found_step2:
+            # Requirement: when step1/step2 target exists but no <p>, read articleBody innerText.
+            fallback = extract_articlebody_inner_text(html_doc)
+            if fallback:
+                return fallback
         body_p = extract_body_p_text(html_doc)
         if body_p:
             return body_p
