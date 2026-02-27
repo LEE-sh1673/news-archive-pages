@@ -7,6 +7,8 @@
   --surface: #ffffff;
   --chip: #ffffff;
   --btn-border: #d5ccb8;
+  --callout-bg: #f7f6f3;
+  --callout-border: #e3e1dc;
 }
 
 * {
@@ -22,6 +24,8 @@
   --surface: #161922;
   --chip: #1f2430;
   --btn-border: #3d4558;
+  --callout-bg: #202532;
+  --callout-border: #353d4f;
 }
 
 body {
@@ -160,6 +164,28 @@ h1 a {
   border-radius: 4px;
   background: var(--surface);
   padding: 14px;
+}
+
+.callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--callout-bg);
+  border: 1px solid var(--callout-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0 14px;
+}
+
+.callout-icon {
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.callout-text {
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-line;
 }
 
 .detail article {

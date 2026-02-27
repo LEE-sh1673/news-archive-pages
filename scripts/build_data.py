@@ -97,6 +97,7 @@ def main():
                     continue
                 summary = sanitize(row.get("summary"), "summary")
                 body = sanitize(row.get("body"), "body")
+                ai_summary = sanitize(row.get("ai_summary"), "summary")
                 scraped_body = sanitize(row.get("scraped_body"), "body")
 
                 # Detail view should display summarized bullet body.
@@ -115,6 +116,7 @@ def main():
                         "title": sanitize(row.get("title"), "title"),
                         "summary": summary,
                         "body": body,
+                        "ai_summary": ai_summary or "요약할 수 없는 내용입니다",
                         "scraped_body": scraped_body,
                         "url": sanitize(row.get("url"), "url"),
                         "category": sanitize(row.get("category"), "category"),

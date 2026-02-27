@@ -22,6 +22,7 @@ const el = {
   backBtn: document.getElementById("backBtn"),
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
+  detailAiSummary: document.getElementById("detailAiSummary"),
   detailBody: document.getElementById("detailBody"),
 };
 
@@ -133,6 +134,7 @@ function openDetail(id) {
   const articlePublishedAt = post.article_published_at || post.published_at || "-";
   const fetchedAt = post.fetched_at || post.archived_at || "-";
   el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
+  el.detailAiSummary.textContent = post.ai_summary || "요약할 수 없는 내용입니다";
   el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
 }
 

@@ -278,6 +278,59 @@ def format_crawled_body(title: str, description: str, body_text: str) -> str:
     return "\n".join(f"- {ln}" for ln in dedup)
 
 
+def _has_readable_content(text: str) -> bool:
+    if not text:
+        return False
+    return bool(re.search(r"[A-Za-z0-9가-힣]", text))
+
+
+def _to_2_3_lines(text: str) -> str:
+    if not text:
+        return "요약할 수 없는 내용입니다"
+    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
+    if len(lines) >= 2:
+        return "\n".join(lines[:3])
+    sents = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", clean_text(text))
+    sents = [clean_text(s) for s in sents if clean_text(s)]
+    if not sents:
+        return "요약할 수 없는 내용입니다"
+    return "\n".join(sents[:3])
+
+
+def build_ai_summary(title: str, description: str, body_text: str) -> str:
+    source = minimal_context_filter(title, description, body_text)
+    if not _has_readable_content(source):
+        return "요약할 수 없는 내용입니다"
+
+    if OPENAI_API_KEY:
+        try:
+            prompt = (
+                "아래 기사 원문을 한국어로 2~3줄로 요약해줘.\n"
+                "- 과장 없이 핵심 사실만\n"
+                "- 특수문자 나열/깨진 문자는 무시\n"
+                "- 출력은 일반 문장만 (불릿 금지)\n\n"
+                f"제목: {title}\n"
+                f"설명: {description}\n"
+                f"원문: {source}\n"
+            )
+            payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                out = json.loads(resp.read().decode("utf-8", errors="replace"))
+            summary = _to_2_3_lines(out.get("output_text", ""))
+            return summary if _has_readable_content(summary) else "요약할 수 없는 내용입니다"
+        except Exception:
+            pass
+
+    fallback = _to_2_3_lines(source)
+    return fallback if _has_readable_content(fallback) else "요약할 수 없는 내용입니다"
+
+
 def http_json(url: str, timeout: int = 20):
     req = urllib.request.Request(
         url,
@@ -746,6 +799,7 @@ def main() -> int:
             # summary = summarize(title, desc, body_raw)
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
+            ai_summary = build_ai_summary(title, desc, body_raw)
             summary = formatted_body or clean_text(desc or body_raw)
             entries.append(
                 {
@@ -754,6 +808,7 @@ def main() -> int:
                     "summary": summary,
                     # Detail view body should show formatted crawled content.
                     "body": formatted_body or summary,
+                    "ai_summary": ai_summary,
                     "scraped_body": body_raw,
                     "url": url,
                     "category": category,
