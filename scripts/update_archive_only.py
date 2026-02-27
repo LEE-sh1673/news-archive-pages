@@ -683,7 +683,7 @@ def fetch_article_body(url: str) -> str:
     if not url:
         return ""
     try:
-        html_doc = http_text(url, timeout=20)
+        html_doc = http_text(url, timeout=60)
         # 1) <div|article itemprop="articleBody" or id="articleBody">
         # 2) section|div preceded by <!-- 기사 본문 -->
         # 3) fallback to document.body innerText p-only, then articleBody innerText
