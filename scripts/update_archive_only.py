@@ -284,17 +284,29 @@ def _has_readable_content(text: str) -> bool:
     return bool(re.search(r"[A-Za-z0-9가-힣]", text))
 
 
-def _to_2_3_lines(text: str) -> str:
-    if not text:
+def _fallback_ai_summary(title: str, text: str) -> str:
+    clean = clean_text(text)
+    if not _has_readable_content(clean):
         return "요약할 수 없는 내용입니다"
-    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
-    if len(lines) >= 2:
-        return "\n".join(lines[:3])
-    sents = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", clean_text(text))
+    sents = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", clean)
     sents = [clean_text(s) for s in sents if clean_text(s)]
-    if not sents:
-        return "요약할 수 없는 내용입니다"
-    return "\n".join(sents[:3])
+    key = sents[0] if sents else clean
+    more = sents[1] if len(sents) > 1 else key
+    t = clean_text(title)[:5] if clean_text(title) else "기사요약"
+    return (
+        f"제목: {t}\n"
+        f"핵심 요약: {key}\n"
+        "- 주요 포인트: 핵심 사실이 정리되었습니다.\n"
+        f"- 주요 포인트: {key}\n"
+        f"- 주요 포인트: {more}"
+    )
+
+
+def _normalize_ai_summary_text(text: str) -> str:
+    if not text:
+        return ""
+    lines = [clean_text(ln) for ln in str(text).splitlines() if clean_text(ln)]
+    return "\n".join(lines)
 
 
 def build_ai_summary(title: str, description: str, body_text: str) -> str:
@@ -305,13 +317,20 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
     if OPENAI_API_KEY:
         try:
             prompt = (
-                "아래 기사 원문을 한국어로 2~3줄로 요약해줘.\n"
-                "- 과장 없이 핵심 사실만\n"
-                "- 특수문자 나열/깨진 문자는 무시\n"
-                "- 출력은 일반 문장만 (불릿 금지)\n\n"
-                f"제목: {title}\n"
-                f"설명: {description}\n"
-                f"원문: {source}\n"
+                "아래 제공된 AI 기사 내용을 바탕으로 핵심만 요약해줘.\n\n"
+                "요약 기준:\n"
+                "제목: 기사 내용을 포괄하는 제목 (5자 내외)\n"
+                "핵심 요약 (Key Takeaway): 1~2문장으로 전체 내용 정리\n"
+                "주요 포인트 (Bullet points): 가장 중요한 내용 3가지\n\n"
+                "출력 형식:\n"
+                "제목: ...\n"
+                "핵심 요약: ...\n"
+                "- 주요 포인트: ...\n"
+                "- 주요 포인트: ...\n"
+                "- 주요 포인트: ...\n\n"
+                f"기사 제목: {title}\n"
+                f"기사 설명: {description}\n"
+                f"기사 원문: {source}\n"
             )
             payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
             req = urllib.request.Request(
@@ -322,12 +341,12 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 out = json.loads(resp.read().decode("utf-8", errors="replace"))
-            summary = _to_2_3_lines(out.get("output_text", ""))
+            summary = _normalize_ai_summary_text(out.get("output_text", ""))
             return summary if _has_readable_content(summary) else "요약할 수 없는 내용입니다"
         except Exception:
             pass
 
-    fallback = _to_2_3_lines(source)
+    fallback = _fallback_ai_summary(title, source)
     return fallback if _has_readable_content(fallback) else "요약할 수 없는 내용입니다"
 
 
