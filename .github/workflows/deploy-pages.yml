@@ -1,11 +1,7 @@
 name: Sync News And Deploy Pages
 
 on:
-  schedule:
-    - cron: "0 */3 * * *"
-  push:
-    branches: [main]
-  workflow_dispatch:
+  # schedule: [temporarily disabled for data cleanup]
 
 permissions:
   contents: write
