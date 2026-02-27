@@ -296,9 +296,9 @@ def _fallback_ai_summary(title: str, text: str) -> str:
     return (
         f"제목: {t}\n"
         f"핵심 요약: {key}\n"
-        "- 주요 포인트: 핵심 사실이 정리되었습니다.\n"
         f"- 주요 포인트: {key}\n"
-        f"- 주요 포인트: {more}"
+        f"- 주요 포인트: {more}\n"
+        f"- 주요 포인트: {sents[2] if len(sents) > 2 else clean}"
     )
 
 
@@ -317,9 +317,11 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
     if OPENAI_API_KEY:
         try:
             prompt = (
-                "아래 제공된 AI 기사 내용을 바탕으로 핵심만 요약해줘.\n\n"
+                "제공된 기사 원문 내용을 바탕으로 핵심만 요약해줘. "
+                "이때 `핵심 사실이 정리되었습니다.`와 같은 내용 말고, "
+                "기사의 원문 내용을 대상으로 핵심 내용만 정리해줘.\n\n"
                 "요약 기준:\n"
-                "제목: 기사 내용을 포괄하는 제목 (5자 내외)\n"
+                "제목: 기사 내용을 포괄하는 제목 (5글자 내외)\n"
                 "핵심 요약 (Key Takeaway): 1~2문장으로 전체 내용 정리\n"
                 "주요 포인트 (Bullet points): 가장 중요한 내용 3가지\n\n"
                 "출력 형식:\n"
