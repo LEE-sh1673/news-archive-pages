@@ -158,22 +158,34 @@ def local_summary(title: str, description: str, content: str) -> str:
     merged = " ".join(part for part in [clean_text(title), clean_text(description), clean_text(content)] if part)
     if not merged:
         return "요약할 본문이 부족합니다."
+
+    prompt = (
+        "아래 원문을 한국어 불릿 리스트로 다시 정리해줘.\n"
+        "- 과장/추측 없이 사실 중심으로 정리\n"
+        "- 출력은 불릿만 작성 (서론/결론 문장 금지)\n\n"
+        f"원문: {merged}\n"
+    )
+    codex_out = run_codex_cli_summary(prompt)
+    bullets = normalize_bullet_output(codex_out)
+    if bullets:
+        return enforce_line_limit(bullets, MAX_SUMMARY_LINES)
+
     sentences = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", merged)
     sentences = [s.strip(" -") for s in sentences if s and s.strip(" -")]
     if not sentences:
         sentences = [merged]
 
-    bullets = []
+    fallback = []
     for s in sentences:
-        if len(bullets) >= MAX_SUMMARY_LINES:
+        if len(fallback) >= MAX_SUMMARY_LINES:
             break
         sentence = clean_text(s)
         if not sentence:
             continue
         if sentence[-1] not in ".!?。다":
             sentence = sentence + "."
-        bullets.append(f"- {sentence}")
-    return enforce_line_limit("\n".join(bullets), MAX_SUMMARY_LINES)
+        fallback.append(f"- {sentence}")
+    return enforce_line_limit("\n".join(fallback), MAX_SUMMARY_LINES)
 
 
 def normalize_bullet_output(text: str) -> str:
