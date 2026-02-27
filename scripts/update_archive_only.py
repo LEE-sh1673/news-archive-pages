@@ -20,6 +20,15 @@ try:
 except Exception:
     sync_playwright = None
 
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+except Exception:
+    requests = None
+    HTTPAdapter = None
+    Retry = None
+
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
@@ -36,6 +45,8 @@ THUMBNAIL_DIR = Path(os.environ.get("THUMBNAIL_DIR", str(ROOT_DIR / "docs" / "as
 THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
+NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
+_NEWSAPI_SESSION = None
 
 
 def fail(msg: str) -> int:
@@ -442,21 +453,98 @@ def format_crawled_body(title: str, description: str, body_text: str) -> str:
     return _fallback_format_crawled_body(title, description, body_text)
 
 
-def http_json(url: str, timeout: int = 20):
-    req = urllib.request.Request(
-        url,
-        headers={
+def http_json(url: str, timeout: int = 20, headers: dict | None = None):
+    req_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+        ),
+        "Accept": "application/json",
+    }
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, headers=req_headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = resp.read().decode("utf-8", errors="replace")
+    return json.loads(data)
+
+
+def simplify_news_query(query: str) -> str:
+    # Keep only the first 2-3 meaningful terms for degraded fallback.
+    terms = [t.strip() for t in re.split(r"\bOR\b|\(|\)", query, flags=re.IGNORECASE) if t.strip()]
+    if not terms:
+        return query
+    return " OR ".join(terms[:3])
+
+
+def split_news_query(query: str):
+    terms = [t.strip() for t in re.split(r"\bOR\b|\(|\)", query, flags=re.IGNORECASE) if t.strip()]
+    # Keep only meaningful unique terms.
+    out = []
+    seen = set()
+    for t in terms:
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def get_newsapi_session():
+    global _NEWSAPI_SESSION
+    if _NEWSAPI_SESSION is not None:
+        return _NEWSAPI_SESSION
+    if not requests:
+        return None
+
+    s = requests.Session()
+    if Retry and HTTPAdapter:
+        retry = Retry(
+            total=3,
+            connect=3,
+            read=3,
+            backoff_factor=0.8,
+            status_forcelist=[426, 429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        s.mount("http://", adapter)
+        s.mount("https://", adapter)
+    _NEWSAPI_SESSION = s
+    return _NEWSAPI_SESSION
+
+
+def request_newsapi(params: dict, auth_mode: str = "header"):
+    p = dict(params)
+    headers = {}
+    if auth_mode == "header":
+        headers["X-Api-Key"] = NEWSAPI_KEY
+    elif auth_mode == "query":
+        p["apiKey"] = NEWSAPI_KEY
+    else:
+        raise ValueError(f"unsupported auth_mode: {auth_mode}")
+
+    url = NEWSAPI_ENDPOINT + "?" + urllib.parse.urlencode(p)
+    session = get_newsapi_session()
+    if session:
+        req_headers = {
             "User-Agent": (
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
             ),
             "Accept": "application/json",
-            "X-Api-Key": NEWSAPI_KEY,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = resp.read().decode("utf-8", errors="replace")
-    return json.loads(data)
+        }
+        req_headers.update(headers)
+        resp = session.get(url, headers=req_headers, timeout=25)
+        if resp.status_code >= 400:
+            raise HTTPError(url, resp.status_code, resp.text[:200], resp.headers, None)
+        try:
+            return resp.json()
+        except Exception:
+            return json.loads(resp.text)
+    return http_json(url, timeout=25, headers=headers)
 
 
 def http_text(url: str, timeout: int = 20):
@@ -923,30 +1011,82 @@ def fetch_article_body(url: str, title: str = "") -> str:
 
 
 def fetch_news(from_date: str, to_date: str, query: str):
-    all_articles = []
-    for page in range(1, MAX_NEWS_PAGES + 1):
-        params = {
-            "q": query,
-            "language": "ko",
-            "sortBy": "publishedAt",
-            "from": from_date,
-            "to": to_date,
-            "pageSize": NEWS_PAGE_SIZE,
-            "page": page,
-            # Keep query param for compatibility with endpoints that don't honor X-Api-Key header.
-            "apiKey": NEWSAPI_KEY,
-        }
-        url = "https://newsapi.org/v2/everything?" + urllib.parse.urlencode(params)
-        data = http_json(url)
-        if data.get("status") != "ok":
-            raise RuntimeError(f"NewsAPI error: {data}")
-        articles = data.get("articles", [])
-        if not articles:
-            break
-        all_articles.extend(articles)
-        if len(articles) < NEWS_PAGE_SIZE:
-            break
-    return all_articles
+    def fetch_news_pages(q: str):
+        out = []
+        for page in range(1, MAX_NEWS_PAGES + 1):
+            params = {
+                "q": q,
+                "language": "ko",
+                "sortBy": "publishedAt",
+                "from": from_date,
+                "to": to_date,
+                "pageSize": NEWS_PAGE_SIZE,
+                "page": page,
+            }
+            try:
+                data = request_newsapi(params, auth_mode="header")
+            except HTTPError as e:
+                if e.code != 426:
+                    raise
+                data = request_newsapi(params, auth_mode="query")
+            except URLError:
+                data = request_newsapi(params, auth_mode="query")
+
+            if data.get("status") != "ok":
+                raise RuntimeError(f"NewsAPI error: {data}")
+            articles = data.get("articles", [])
+            if not articles:
+                break
+            out.extend(articles)
+            if len(articles) < NEWS_PAGE_SIZE:
+                break
+        return out
+
+    try:
+        return fetch_news_pages(query)
+    except HTTPError as e:
+        if e.code != 426:
+            raise
+
+    # 426 fallback #2: simplify complex OR query once.
+    q_simple = simplify_news_query(query)
+    if q_simple and q_simple != query:
+        try:
+            return fetch_news_pages(q_simple)
+        except HTTPError as e:
+            if e.code != 426:
+                raise
+        except Exception:
+            pass
+
+    # 426 fallback #3: split OR query and merge partial results.
+    split_terms = split_news_query(query)
+    merged = []
+    seen = set()
+    for term in split_terms[:6]:
+        try:
+            part = fetch_news_pages(term)
+        except HTTPError as e:
+            if e.code == 426:
+                continue
+            raise
+        except Exception:
+            continue
+
+        for a in part:
+            title = clean_text(a.get("title", "")).lower()
+            url = (a.get("url") or "").strip()
+            if not title or not url:
+                continue
+            key = (title, url)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(a)
+
+    if merged:
+        return merged
+    raise HTTPError(NEWSAPI_ENDPOINT, 426, "Upgrade Required", None, None)
 
 
 def safe_fetch_news(from_date: str, to_date: str, query: str, label: str):
