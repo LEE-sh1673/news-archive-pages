@@ -15,6 +15,11 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:
+    sync_playwright = None
+
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
@@ -30,6 +35,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 THUMBNAIL_DIR = Path(os.environ.get("THUMBNAIL_DIR", str(ROOT_DIR / "docs" / "assets" / "thumbs"))).expanduser()
 THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
+PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
 
 
 def fail(msg: str) -> int:
@@ -436,6 +442,30 @@ def http_text(url: str, timeout: int = 20):
     return raw.decode("utf-8", errors="replace")
 
 
+def http_text_playwright(url: str, timeout_ms: int = PLAYWRIGHT_TIMEOUT_MS) -> str:
+    if not sync_playwright:
+        return ""
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+                    ),
+                )
+                page = context.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                # Give JS-rendered article blocks a short settle window.
+                page.wait_for_timeout(1500)
+                return page.content() or ""
+            finally:
+                browser.close()
+    except Exception:
+        return ""
+
+
 NOISE_PATTERNS = [
     re.compile(r"(?i)\b(login|sign in|sign up|newsletter|subscribe|cookie|privacy|terms|copyright)\b"),
     re.compile(r"(?i)\b(all rights reserved|advertisement|sponsored)\b"),
@@ -691,26 +721,42 @@ def extract_articlebody_inner_text(html_doc: str) -> str:
     return p.candidates[0][1]
 
 
+def extract_article_body_from_html(html_doc: str) -> str:
+    if not html_doc:
+        return ""
+    # 1) <div|article itemprop="articleBody" or id="articleBody">
+    # 2) section|div preceded by <!-- 기사 본문 -->
+    # 3) fallback to document.body innerText p-only, then articleBody innerText
+    priority, found_step1, found_step2 = extract_priority_p_result(html_doc)
+    if priority:
+        return priority
+    if found_step1 or found_step2:
+        # Requirement: when step1/step2 target exists but no <p>, read articleBody innerText.
+        fallback = extract_articlebody_inner_text(html_doc)
+        if fallback:
+            return fallback
+    body_p = extract_body_p_text(html_doc)
+    if body_p:
+        return body_p
+    return extract_articlebody_inner_text(html_doc)
+
+
 def fetch_article_body(url: str) -> str:
     if not url:
         return ""
     try:
         html_doc = http_text(url, timeout=60)
-        # 1) <div|article itemprop="articleBody" or id="articleBody">
-        # 2) section|div preceded by <!-- 기사 본문 -->
-        # 3) fallback to document.body innerText p-only, then articleBody innerText
-        priority, found_step1, found_step2 = extract_priority_p_result(html_doc)
-        if priority:
-            return priority
-        if found_step1 or found_step2:
-            # Requirement: when step1/step2 target exists but no <p>, read articleBody innerText.
-            fallback = extract_articlebody_inner_text(html_doc)
-            if fallback:
-                return fallback
-        body_p = extract_body_p_text(html_doc)
-        if body_p:
-            return body_p
-        return extract_articlebody_inner_text(html_doc)
+        body = extract_article_body_from_html(html_doc)
+        if body and len(body.strip()) >= 120:
+            return body
+
+        # Fallback for JS-rendered pages where urllib HTML misses article body.
+        rendered_html = http_text_playwright(url, timeout_ms=PLAYWRIGHT_TIMEOUT_MS)
+        rendered_body = extract_article_body_from_html(rendered_html)
+        if rendered_body:
+            return rendered_body
+
+        return body
     except Exception:
         return ""
 
