@@ -262,6 +262,22 @@ def summarize(title: str, description: str, content: str) -> str:
     return local_summary(title, description, filtered_source)
 
 
+def format_crawled_body(title: str, description: str, body_text: str) -> str:
+    filtered = minimal_context_filter(title, description, body_text)
+    if not filtered:
+        return ""
+    lines = [clean_text(ln) for ln in filtered.splitlines() if clean_text(ln)]
+    dedup = []
+    seen = set()
+    for ln in lines:
+        key = ln.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(ln)
+    return "\n".join(f"- {ln}" for ln in dedup)
+
+
 def http_json(url: str, timeout: int = 20):
     req = urllib.request.Request(
         url,
@@ -654,14 +670,18 @@ def main() -> int:
             extracted = fetch_article_body(url)
             published = clean_text(a.get("publishedAt", ""))
             body_raw = extracted or content or desc
-            summary = summarize(title, desc, body_raw)
+            # AS-IS: crawl -> noise removal -> summarize -> formatting
+            # summary = summarize(title, desc, body_raw)
+            # TO-BE: crawl -> noise removal -> formatting
+            formatted_body = format_crawled_body(title, desc, body_raw)
+            summary = formatted_body or clean_text(desc or body_raw)
             entries.append(
                 {
                     "id": make_id(url, title, published),
                     "title": title,
                     "summary": summary,
-                    # Detail view body should show summarized bullet content.
-                    "body": summary,
+                    # Detail view body should show formatted crawled content.
+                    "body": formatted_body or summary,
                     "scraped_body": body_raw,
                     "url": url,
                     "category": category,
