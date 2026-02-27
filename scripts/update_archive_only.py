@@ -721,24 +721,104 @@ def extract_articlebody_inner_text(html_doc: str) -> str:
     return p.candidates[0][1]
 
 
+class ItempropArticleBodyExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
+        self.skip_depth = 0
+        self.stack = []
+        self.candidates = []
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        attrs_map = {k.lower(): (v or "") for k, v in attrs}
+        if t in self.skip_tags:
+            self.skip_depth += 1
+        is_target = (
+            t in {"div", "section"}
+            and attrs_map.get("itemprop", "").strip().lower() == "articlebody"
+        )
+        self.stack.append({"is_target": is_target, "parts": []})
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if not self.stack:
+            return
+        node = self.stack.pop()
+        txt = normalize_inner_text(" ".join(node["parts"]))
+        if node["is_target"] and txt:
+            self.candidates.append((len(txt), txt[:MAX_SOURCE_CHARS]))
+        if self.stack and txt:
+            self.stack[-1]["parts"].append(txt)
+        if t in self.skip_tags and self.skip_depth > 0:
+            self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if self.skip_depth > 0 or not self.stack:
+            return
+        txt = normalize_inner_text(data)
+        if txt:
+            self.stack[-1]["parts"].append(txt)
+
+
+class BodyInnerTextExtractor(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_body = False
+        self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
+        self.skip_depth = 0
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        t = tag.lower()
+        if t == "body":
+            self.in_body = True
+            return
+        if not self.in_body:
+            return
+        if t in self.skip_tags:
+            self.skip_depth += 1
+
+    def handle_endtag(self, tag):
+        t = tag.lower()
+        if t == "body":
+            self.in_body = False
+            return
+        if self.in_body and t in self.skip_tags and self.skip_depth > 0:
+            self.skip_depth -= 1
+
+    def handle_data(self, data):
+        if not self.in_body or self.skip_depth > 0:
+            return
+        txt = normalize_inner_text(data)
+        if txt:
+            self.parts.append(txt)
+
+
+def extract_itemprop_articlebody_text(html_doc: str) -> str:
+    p = ItempropArticleBodyExtractor()
+    p.feed(html_doc)
+    if not p.candidates:
+        return ""
+    p.candidates.sort(key=lambda x: -x[0])
+    return p.candidates[0][1]
+
+
+def extract_document_body_inner_text(html_doc: str) -> str:
+    p = BodyInnerTextExtractor()
+    p.feed(html_doc)
+    return normalize_inner_text("\n".join(p.parts))[:MAX_SOURCE_CHARS]
+
+
 def extract_article_body_from_html(html_doc: str) -> str:
     if not html_doc:
         return ""
-    # 1) <div|article itemprop="articleBody" or id="articleBody">
-    # 2) section|div preceded by <!-- 기사 본문 -->
-    # 3) fallback to document.body innerText p-only, then articleBody innerText
-    priority, found_step1, found_step2 = extract_priority_p_result(html_doc)
-    if priority:
-        return priority
-    if found_step1 or found_step2:
-        # Requirement: when step1/step2 target exists but no <p>, read articleBody innerText.
-        fallback = extract_articlebody_inner_text(html_doc)
-        if fallback:
-            return fallback
-    body_p = extract_body_p_text(html_doc)
-    if body_p:
-        return body_p
-    return extract_articlebody_inner_text(html_doc)
+    # 1) div|section[itemprop=articleBody] innerText
+    # 2) fallback to document.body innerText
+    article_body = extract_itemprop_articlebody_text(html_doc)
+    if article_body:
+        return article_body
+    return extract_document_body_inner_text(html_doc)
 
 
 def fetch_article_body(url: str) -> str:
