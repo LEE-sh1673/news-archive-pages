@@ -28,6 +28,24 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Run Codex preflight
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: |
+            Validate Codex is available in this GitHub runner.
+            Respond with exactly: READY
+          output-file: codex-preflight.txt
+          safety-strategy: drop-sudo
+          sandbox: read-only
+          codex-args: '["--skip-git-repo-check"]'
+
+      - name: Verify Codex preflight output
+        run: |
+          test -f codex-preflight.txt
+          grep -q "READY" codex-preflight.txt
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
