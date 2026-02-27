@@ -23,6 +23,7 @@ const el = {
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
   detailAiSummary: document.getElementById("detailAiSummary"),
+  detailThumbnail: document.getElementById("detailThumbnail"),
   detailBody: document.getElementById("detailBody"),
 };
 
@@ -135,6 +136,13 @@ function openDetail(id) {
   const fetchedAt = post.fetched_at || post.archived_at || "-";
   el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
   el.detailAiSummary.textContent = post.ai_summary || "요약할 수 없는 내용입니다";
+  if (post.thumbnail) {
+    el.detailThumbnail.src = post.thumbnail;
+    el.detailThumbnail.classList.remove("hidden");
+  } else {
+    el.detailThumbnail.removeAttribute("src");
+    el.detailThumbnail.classList.add("hidden");
+  }
   el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
 }
 
@@ -165,6 +173,22 @@ function renderList() {
     rank.className = "rank";
     rank.textContent = `${start + idx + 1}.`;
 
+    const thumbWrap = document.createElement("div");
+    thumbWrap.className = "thumb-wrap";
+    if (p.thumbnail) {
+      const thumb = document.createElement("img");
+      thumb.className = "thumb";
+      thumb.src = p.thumbnail;
+      thumb.alt = "기사 썸네일";
+      thumb.loading = "lazy";
+      thumbWrap.appendChild(thumb);
+    } else {
+      const ph = document.createElement("div");
+      ph.className = "thumb thumb-ph";
+      ph.textContent = "N";
+      thumbWrap.appendChild(ph);
+    }
+
     const body = document.createElement("div");
     const title = document.createElement("a");
     title.className = "title";
@@ -189,6 +213,7 @@ function renderList() {
     body.appendChild(summary);
     body.appendChild(meta);
     head.appendChild(rank);
+    head.appendChild(thumbWrap);
     head.appendChild(body);
     item.appendChild(head);
     el.listContainer.appendChild(item);

@@ -116,8 +116,8 @@ h1 a {
 
 .item-head {
   display: grid;
-  grid-template-columns: 28px 1fr;
-  gap: 6px;
+  grid-template-columns: 28px 88px 1fr;
+  gap: 8px;
 }
 
 .rank {
@@ -132,6 +132,28 @@ h1 a {
   color: var(--text);
   text-decoration: none;
   cursor: pointer;
+}
+
+.thumb-wrap {
+  display: flex;
+  align-items: flex-start;
+}
+
+.thumb {
+  width: 88px;
+  height: 58px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: #ececec;
+}
+
+.thumb-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-size: 12px;
 }
 
 .summary {
@@ -188,6 +210,15 @@ h1 a {
   white-space: pre-line;
 }
 
+.detail-thumb {
+  width: 100%;
+  max-width: 680px;
+  display: block;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  margin: 4px 0 14px;
+}
+
 .detail article {
   font-size: 0.9em;
   line-height: 1.8em;
@@ -218,6 +249,13 @@ h1 a {
   }
   .meta {
     font-size: 13px;
+  }
+  .item-head {
+    grid-template-columns: 28px 74px 1fr;
+  }
+  .thumb {
+    width: 74px;
+    height: 52px;
   }
   .detail article {
     font-size: 0.9em;

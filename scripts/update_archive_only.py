@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import datetime as dt
 import html
 import hashlib
@@ -8,6 +9,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
@@ -22,6 +24,10 @@ NEWS_PAGE_SIZE = max(20, min(100, int(os.environ.get("NEWS_PAGE_SIZE", "100"))))
 MAX_NEWS_PAGES = max(1, int(os.environ.get("MAX_NEWS_PAGES", "3")))
 MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
 MAX_SOURCE_CHARS = max(1000, int(os.environ.get("MAX_SOURCE_CHARS", "16000")))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+THUMBNAIL_DIR = Path(os.environ.get("THUMBNAIL_DIR", str(ROOT_DIR / "docs" / "assets" / "thumbs"))).expanduser()
+THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
+THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 
 
 def fail(msg: str) -> int:
@@ -728,6 +734,65 @@ def make_id(url: str, title: str, published_at: str) -> str:
     return hashlib.sha1(raw).hexdigest()[:16]
 
 
+def make_thumbnail_prompt(title: str, body_text: str) -> str:
+    source = minimal_context_filter(title, "", body_text)[:1200]
+    return (
+        "다음 기사 내용 기반으로, 사실 중심의 뉴스 썸네일 일러스트를 생성해줘. "
+        "텍스트/로고/워터마크/브랜드명/얼굴 클로즈업 없이 상징적인 장면으로 구성해줘. "
+        "고해상도, 16:10 비율 느낌의 심플한 편집 스타일.\n\n"
+        f"기사 제목: {title}\n"
+        f"기사 핵심 내용: {source}"
+    )
+
+
+def thumbnail_rel_path(article_id: str) -> str:
+    return f"./assets/thumbs/{article_id}.png"
+
+
+def generate_thumbnail(article_id: str, title: str, body_text: str) -> str:
+    rel = thumbnail_rel_path(article_id)
+    out_path = THUMBNAIL_DIR / f"{article_id}.png"
+    if out_path.exists():
+        return rel
+    if not OPENAI_API_KEY:
+        return ""
+    if not _has_readable_content(body_text):
+        return ""
+
+    THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+    prompt = make_thumbnail_prompt(title, body_text)
+    payload = {
+        "model": THUMBNAIL_MODEL,
+        "prompt": prompt,
+        "size": THUMBNAIL_SIZE,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/images/generations",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            out = json.loads(resp.read().decode("utf-8", errors="replace"))
+        data = out.get("data") or []
+        if not data:
+            return ""
+        first = data[0]
+        b64 = first.get("b64_json")
+        if b64:
+            out_path.write_bytes(base64.b64decode(b64))
+            return rel
+        url = first.get("url")
+        if url:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                out_path.write_bytes(resp.read())
+            return rel
+    except Exception:
+        return ""
+    return ""
+
+
 def load_existing_ids(path: str):
     ids = set()
     if not os.path.exists(path):
@@ -815,21 +880,24 @@ def main() -> int:
             content = clean_text(a.get("content", ""))
             extracted = fetch_article_body(url)
             published = clean_text(a.get("publishedAt", ""))
+            rid = make_id(url, title, published)
             body_raw = extracted or content or desc
             # AS-IS: crawl -> noise removal -> summarize -> formatting
             # summary = summarize(title, desc, body_raw)
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
             ai_summary = build_ai_summary(title, desc, body_raw)
+            thumb = generate_thumbnail(rid, title, body_raw)
             summary = formatted_body or clean_text(desc or body_raw)
             entries.append(
                 {
-                    "id": make_id(url, title, published),
+                    "id": rid,
                     "title": title,
                     "summary": summary,
                     # Detail view body should show formatted crawled content.
                     "body": formatted_body or summary,
                     "ai_summary": ai_summary,
+                    "thumbnail": thumb,
                     "scraped_body": body_raw,
                     "url": url,
                     "category": category,

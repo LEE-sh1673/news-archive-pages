@@ -117,6 +117,7 @@ def main():
                         "summary": summary,
                         "body": body,
                         "ai_summary": ai_summary or "요약할 수 없는 내용입니다",
+                        "thumbnail": sanitize(row.get("thumbnail"), "thumbnail"),
                         "scraped_body": scraped_body,
                         "url": sanitize(row.get("url"), "url"),
                         "category": sanitize(row.get("category"), "category"),
