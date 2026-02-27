@@ -306,32 +306,39 @@ def http_text(url: str, timeout: int = 20):
     return raw.decode("utf-8", errors="replace")
 
 
-class MainBodyExtractor(HTMLParser):
+class PriorityBodyExtractor(HTMLParser):
     def __init__(self):
         super().__init__()
         self.stack = []
         self.skip_depth = 0
-        self.candidates = []
+        self.candidates_step1 = []
+        self.candidates_step2 = []
         self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
+        self.pending_article_comment = False
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
         attrs_map = {k.lower(): (v or "") for k, v in attrs}
-        node = {"tag": t, "attrs": attrs_map, "parts": []}
+        is_step1 = self._is_step1_target(t, attrs_map)
+        is_step2 = t in {"section", "div"} and self.pending_article_comment
+        node = {"tag": t, "attrs": attrs_map, "parts": [], "is_step1": is_step1, "is_step2": is_step2}
         self.stack.append(node)
         if t in self.skip_tags:
             self.skip_depth += 1
+        if is_step2:
+            self.pending_article_comment = False
 
     def handle_endtag(self, tag):
         t = tag.lower()
         if not self.stack:
             return
         node = self.stack.pop()
-        text = clean_text(" ".join(node["parts"]))
+        text = normalize_inner_text(" ".join(node["parts"]))
         if text:
-            priority = self._priority(node["tag"], node["attrs"])
-            if priority is not None:
-                self.candidates.append((priority, len(text), text))
+            if node["is_step1"]:
+                self.candidates_step1.append((len(text), text))
+            elif node["is_step2"]:
+                self.candidates_step2.append((len(text), text))
             if self.stack:
                 self.stack[-1]["parts"].append(text)
         if t in self.skip_tags and self.skip_depth > 0:
@@ -344,40 +351,44 @@ class MainBodyExtractor(HTMLParser):
         if txt:
             self.stack[-1]["parts"].append(txt)
 
+    def handle_comment(self, data):
+        txt = clean_text(data).replace(" ", "")
+        if "기사본문" in txt:
+            self.pending_article_comment = True
+
     @staticmethod
-    def _priority(tag, attrs):
+    def _is_step1_target(tag, attrs):
+        if tag not in {"div", "article"}:
+            return False
         itemprop = attrs.get("itemprop", "").strip().lower()
-        if itemprop == "articlebody":
-            return 0
-        cls = attrs.get("class", "").lower()
-        if tag == "div" and "contents" in cls:
-            # Explicitly include div[class*=contents] as a strong candidate.
-            return 1
-        idv = attrs.get("id", "").lower()
-        merged = f"{idv} {cls}"
-        if re.search(r"(contents?|body|article[-_ ]?body|post[-_ ]?body|entry[-_ ]?content)", merged):
-            return 2
-        return None
+        idv = attrs.get("id", "").strip().lower()
+        return itemprop == "articlebody" or idv == "articlebody"
+
+
+def extract_priority_body(html_doc: str) -> str:
+    parser = PriorityBodyExtractor()
+    parser.feed(html_doc)
+    if parser.candidates_step1:
+        parser.candidates_step1.sort(key=lambda x: -x[0])
+        return parser.candidates_step1[0][1][:MAX_SOURCE_CHARS]
+    if parser.candidates_step2:
+        parser.candidates_step2.sort(key=lambda x: -x[0])
+        return parser.candidates_step2[0][1][:MAX_SOURCE_CHARS]
+    return ""
 
 
 def extract_main_body(html_doc: str) -> str:
-    parser = MainBodyExtractor()
+    body = extract_priority_body(html_doc)
+    if body:
+        return body
+
+    parser = PriorityBodyExtractor()
     parser.feed(html_doc)
-    if not parser.candidates:
+    merged_candidates = parser.candidates_step1 + parser.candidates_step2
+    if not merged_candidates:
         return ""
-    parser.candidates.sort(key=lambda x: (x[0], -x[1]))
-    primary = parser.candidates[0][2]
-
-    # Also include texts from div[class*=contents] candidates when available.
-    extras = []
-    for pri, _, txt in parser.candidates[1:]:
-        if pri == 1 and txt and txt not in primary:
-            extras.append(txt)
-
-    body = primary
-    if extras:
-        body = f"{primary}\n" + "\n".join(extras)
-    return clean_text(body)[:MAX_SOURCE_CHARS]
+    merged_candidates.sort(key=lambda x: -x[0])
+    return merged_candidates[0][1][:MAX_SOURCE_CHARS]
 
 
 class BodyInnerTextExtractor(HTMLParser):
@@ -435,12 +446,13 @@ def fetch_article_body(url: str) -> str:
         return ""
     try:
         html_doc = http_text(url, timeout=20)
-        # 1) Use whole document.body inner text as requested.
-        whole = extract_body_inner_text(html_doc)
-        if whole:
-            return whole
-        # 2) Fallback: targeted body candidates.
-        return extract_main_body(html_doc)
+        # 1) <div|article itemprop="articleBody" or id="articleBody">
+        # 2) section|div preceded by <!-- 기사 본문 -->
+        # 3) fallback to document.body.innerText
+        priority = extract_priority_body(html_doc)
+        if priority:
+            return priority
+        return extract_body_inner_text(html_doc)
     except Exception:
         return ""
 
