@@ -127,6 +127,50 @@ def minimal_context_filter(title: str, description: str, body_text: str) -> str:
     return "\n".join(kept)
 
 
+def _simple_ui_noise_filter(lines):
+    out = []
+    for ln in lines:
+        s = clean_text(ln)
+        if not s:
+            continue
+        if any(rx.search(s) for rx in UI_NOISE_PATTERNS_SIMPLE):
+            continue
+        out.append(s)
+    return out
+
+
+def _codex_filter_unrelated_lines(title: str, text: str) -> str:
+    if not title or not text:
+        return ""
+    prompt = (
+        "아래 기사 본문 라인 목록에서 제목과 관련 없는 UI/광고/메뉴 문구만 제거해줘.\n"
+        "- 원문 문장은 절대 재작성하지 말고, 관련 있는 라인만 그대로 남겨줘.\n"
+        "- 출력은 원문 라인만 줄바꿈으로 반환.\n\n"
+        f"제목: {title}\n"
+        f"본문 라인들:\n{text}\n"
+    )
+    return run_codex_cli_summary(prompt)
+
+
+def filter_scraped_body_text(title: str, body_text: str) -> str:
+    source = normalize_inner_text(body_text)
+    if not source:
+        return ""
+    lines = [ln for ln in source.splitlines() if ln.strip()]
+    lines = _simple_ui_noise_filter(lines)
+    baseline = "\n".join(lines)[:MAX_SOURCE_CHARS]
+    if not baseline:
+        return ""
+
+    # If Codex CLI is available, try title-context filtering first.
+    codex_filtered = _codex_filter_unrelated_lines(title, baseline)
+    if codex_filtered:
+        final_lines = _simple_ui_noise_filter(codex_filtered.splitlines())
+        if final_lines:
+            return "\n".join(final_lines)[:MAX_SOURCE_CHARS]
+    return baseline
+
+
 def enforce_line_limit(text: str, limit: int) -> str:
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return "\n".join(lines[:limit])
@@ -476,6 +520,16 @@ NOISE_PATTERNS = [
     re.compile(r"(?i)\b(댓글|공유|좋아요|기사원문|원문보기|관련 기사|관련기사)\b"),
 ]
 JP_RE = re.compile(r"[\u3040-\u30ff\uff66-\uff9f]")
+UI_NOISE_PATTERNS_SIMPLE = [
+    re.compile(r"뉴스$", re.IGNORECASE),
+    re.compile(r"전체보기"),
+    re.compile(r"댓글보기"),
+    re.compile(r"제보하기"),
+    re.compile(r"관련사진보기"),
+    re.compile(r"구독"),
+    re.compile(r"로그인"),
+    re.compile(r"회원가입"),
+]
 
 
 def filter_article_paragraphs(paragraphs):
@@ -727,7 +781,11 @@ class ItempropArticleBodyExtractor(HTMLParser):
         self.skip_tags = {"script", "style", "noscript", "iframe", "svg"}
         self.skip_depth = 0
         self.stack = []
+        self.current_target_depth = 0
+        self.current_p_parts = None
+        self.current_target_p = []
         self.candidates = []
+        self.inner_candidates = []
 
     def handle_starttag(self, tag, attrs):
         t = tag.lower()
@@ -738,16 +796,34 @@ class ItempropArticleBodyExtractor(HTMLParser):
             t in {"div", "section"}
             and attrs_map.get("itemprop", "").strip().lower() == "articlebody"
         )
+        if is_target:
+            self.current_target_depth += 1
+        if self.current_target_depth > 0 and t == "p" and self.skip_depth == 0:
+            self.current_p_parts = []
         self.stack.append({"is_target": is_target, "parts": []})
 
     def handle_endtag(self, tag):
         t = tag.lower()
+        if t == "p" and self.current_p_parts is not None:
+            ptxt = normalize_inner_text(" ".join(self.current_p_parts))
+            if ptxt:
+                self.current_target_p.append(ptxt)
+            self.current_p_parts = None
         if not self.stack:
             return
         node = self.stack.pop()
         txt = normalize_inner_text(" ".join(node["parts"]))
         if node["is_target"] and txt:
-            self.candidates.append((len(txt), txt[:MAX_SOURCE_CHARS]))
+            p_lines = filter_article_paragraphs(self.current_target_p)
+            if p_lines:
+                ptxt = "\n".join(p_lines)[:MAX_SOURCE_CHARS]
+                self.candidates.append((len(ptxt), ptxt))
+            self.current_target_p = []
+            inner_lines = filter_article_paragraphs([x for x in txt.splitlines() if x.strip()])
+            if inner_lines:
+                inner_txt = "\n".join(inner_lines)[:MAX_SOURCE_CHARS]
+                self.inner_candidates.append((len(inner_txt), inner_txt))
+            self.current_target_depth = max(0, self.current_target_depth - 1)
         if self.stack and txt:
             self.stack[-1]["parts"].append(txt)
         if t in self.skip_tags and self.skip_depth > 0:
@@ -759,6 +835,8 @@ class ItempropArticleBodyExtractor(HTMLParser):
         txt = normalize_inner_text(data)
         if txt:
             self.stack[-1]["parts"].append(txt)
+            if self.current_p_parts is not None:
+                self.current_p_parts.append(txt)
 
 
 class BodyInnerTextExtractor(HTMLParser):
@@ -798,10 +876,13 @@ class BodyInnerTextExtractor(HTMLParser):
 def extract_itemprop_articlebody_text(html_doc: str) -> str:
     p = ItempropArticleBodyExtractor()
     p.feed(html_doc)
-    if not p.candidates:
-        return ""
-    p.candidates.sort(key=lambda x: -x[0])
-    return p.candidates[0][1]
+    if p.candidates:
+        p.candidates.sort(key=lambda x: -x[0])
+        return p.candidates[0][1]
+    if p.inner_candidates:
+        p.inner_candidates.sort(key=lambda x: -x[0])
+        return p.inner_candidates[0][1]
+    return ""
 
 
 def extract_document_body_inner_text(html_doc: str) -> str:
@@ -821,18 +902,18 @@ def extract_article_body_from_html(html_doc: str) -> str:
     return extract_document_body_inner_text(html_doc)
 
 
-def fetch_article_body(url: str) -> str:
+def fetch_article_body(url: str, title: str = "") -> str:
     if not url:
         return ""
     try:
         html_doc = http_text(url, timeout=60)
-        body = extract_article_body_from_html(html_doc)
+        body = filter_scraped_body_text(title, extract_article_body_from_html(html_doc))
         if body and len(body.strip()) >= 120:
             return body
 
         # Fallback for JS-rendered pages where urllib HTML misses article body.
         rendered_html = http_text_playwright(url, timeout_ms=PLAYWRIGHT_TIMEOUT_MS)
-        rendered_body = extract_article_body_from_html(rendered_html)
+        rendered_body = filter_scraped_body_text(title, extract_article_body_from_html(rendered_html))
         if rendered_body:
             return rendered_body
 
@@ -1037,7 +1118,7 @@ def main() -> int:
             title = clean_text(a.get("title", ""))
             url = (a.get("url") or "").strip()
             desc = clean_text(a.get("description", ""))
-            extracted = fetch_article_body(url)
+            extracted = fetch_article_body(url, title=title)
             published = clean_text(a.get("publishedAt", ""))
             rid = make_id(url, title, published)
             # Keep post original body sourced from fetch_article_body(url).
