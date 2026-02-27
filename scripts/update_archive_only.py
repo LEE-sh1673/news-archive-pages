@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -315,44 +317,66 @@ def _normalize_ai_summary_text(text: str) -> str:
     return "\n".join(lines)
 
 
+def run_codex_cli_summary(prompt: str) -> str:
+    codex_bin = "codex"
+    with tempfile.NamedTemporaryFile(prefix="codex_summary_", suffix=".txt", delete=False) as tmp:
+        out_path = tmp.name
+    cmd = [
+        codex_bin,
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-o",
+        out_path,
+        "-",
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=True,
+        )
+        with open(out_path, "r", encoding="utf-8", errors="replace") as f:
+            return _normalize_ai_summary_text(f.read())
+    except Exception:
+        return ""
+    finally:
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+
+
 def build_ai_summary(title: str, description: str, body_text: str) -> str:
     source = minimal_context_filter(title, description, body_text)
     if not _has_readable_content(source):
         return "요약할 수 없는 내용입니다"
 
-    if OPENAI_API_KEY:
-        try:
-            prompt = (
-                "제공된 기사 원문 내용을 바탕으로 핵심만 요약해줘. "
-                "이때 `핵심 사실이 정리되었습니다.`와 같은 내용 말고, "
-                "기사의 원문 내용을 대상으로 핵심 내용만 정리해줘.\n\n"
-                "요약 기준:\n"
-                "제목: 기사 내용을 포괄하는 제목 (5글자 내외)\n"
-                "핵심 요약 (Key Takeaway): 1~2문장으로 전체 내용 정리\n"
-                "주요 포인트 (Bullet points): 가장 중요한 내용 3가지\n\n"
-                "출력 형식:\n"
-                "제목: ...\n"
-                "핵심 요약: ...\n"
-                "- 주요 포인트: ...\n"
-                "- 주요 포인트: ...\n"
-                "- 주요 포인트: ...\n\n"
-                f"기사 제목: {title}\n"
-                f"기사 설명: {description}\n"
-                f"기사 원문: {source}\n"
-            )
-            payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/responses",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                out = json.loads(resp.read().decode("utf-8", errors="replace"))
-            summary = _normalize_ai_summary_text(out.get("output_text", ""))
-            return summary if _has_readable_content(summary) else "요약할 수 없는 내용입니다"
-        except Exception:
-            pass
+    prompt = (
+        "제공된 기사 원문 내용을 바탕으로 핵심만 요약해줘. "
+        "이때 `핵심 사실이 정리되었습니다.`와 같은 내용 말고, "
+        "기사의 원문 내용을 대상으로 핵심 내용만 정리해줘.\n\n"
+        "요약 기준:\n"
+        "제목: 기사 내용을 포괄하는 제목 (5글자 내외)\n"
+        "핵심 요약 (Key Takeaway): 1~2문장으로 전체 내용 정리\n"
+        "주요 포인트 (Bullet points): 가장 중요한 내용 3가지\n\n"
+        "출력 형식:\n"
+        "제목: ...\n"
+        "핵심 요약: ...\n"
+        "- 주요 포인트: ...\n"
+        "- 주요 포인트: ...\n"
+        "- 주요 포인트: ...\n\n"
+        f"기사 제목: {title}\n"
+        f"기사 설명: {description}\n"
+        f"기사 원문: {source}\n"
+    )
+    summary = run_codex_cli_summary(prompt)
+    if _has_readable_content(summary):
+        return summary
 
     fallback = _fallback_ai_summary(title, source)
     return fallback if _has_readable_content(fallback) else "요약할 수 없는 내용입니다"
@@ -887,7 +911,9 @@ def main() -> int:
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
             ai_summary = build_ai_summary(title, desc, body_raw)
-            thumb = generate_thumbnail(rid, title, body_raw)
+            # Thumbnail generation is temporarily disabled.
+            # thumb = generate_thumbnail(rid, title, body_raw)
+            thumb = ""
             summary = formatted_body or clean_text(desc or body_raw)
             entries.append(
                 {
