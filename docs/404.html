@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>news archive</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        var pathname = window.location.pathname || "/";
+        var search = window.location.search || "";
+        var hash = window.location.hash || "";
+        var segments = pathname.split("/").filter(Boolean);
+        var base = "";
+        if (segments.length > 0 && segments[0] !== "articles") {
+          base = "/" + segments[0];
+        }
+        var target = base + "/?route=" + encodeURIComponent(pathname + search + hash);
+        window.location.replace(target);
+      })();
+    </script>
+  </body>
+  </html>

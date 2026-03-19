@@ -2,6 +2,7 @@ const PAGE_SIZE = 10;
 let allPosts = [];
 let filteredPosts = [];
 let page = 1;
+let currentPostId = null;
 
 const el = {
   homeTitle: document.getElementById("homeTitle"),
@@ -116,6 +117,46 @@ function relativeTime(value) {
   return `${Math.floor(mo / 12)}년 전`;
 }
 
+function normalizePath(path) {
+  if (!path) return "/";
+  let out = String(path).replace(/\/+/g, "/");
+  if (!out.startsWith("/")) out = `/${out}`;
+  if (out.length > 1 && out.endsWith("/")) out = out.slice(0, -1);
+  return out || "/";
+}
+
+function getRepoBasePath() {
+  const path = normalizePath(window.location.pathname);
+  if (path === "/" || path === "/index.html") return "";
+  if (path.includes("/articles/")) return path.split("/articles/")[0];
+  if (path.endsWith("/404.html")) return path.slice(0, -"/404.html".length);
+  return path;
+}
+
+function getRoutedPath() {
+  const url = new URL(window.location.href);
+  const routeParam = url.searchParams.get("route");
+  return normalizePath(routeParam || window.location.pathname);
+}
+
+function articlePath(id) {
+  return `${getRepoBasePath()}/articles/${encodeURIComponent(id)}`;
+}
+
+function homePath() {
+  return `${getRepoBasePath() || ""}/`;
+}
+
+function replaceRouteState(path) {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("route");
+  window.history.replaceState({}, "", `${normalizePath(path)}${url.search}${url.hash}`);
+}
+
+function pushRouteState(path) {
+  window.history.pushState({}, "", normalizePath(path));
+}
+
 function sortPosts(posts, sortKey) {
   const sorted = [...posts];
   const fetchedOf = (x) => x.fetched_at || x.archived_at || x.article_published_at || x.published_at;
@@ -145,7 +186,7 @@ function applyFilters() {
   renderList();
 }
 
-function goHome(resetAll = false) {
+function goHome(resetAll = false, updateHistory = true) {
   if (resetAll) {
     el.searchInput.value = "";
     el.sortSelect.value = "latest";
@@ -153,15 +194,20 @@ function goHome(resetAll = false) {
     filteredPosts = sortPosts([...allPosts], "latest");
     page = 1;
   }
+  currentPostId = null;
   el.detailView.classList.add("hidden");
   el.listView.classList.remove("hidden");
   el.toolbar.classList.remove("hidden");
+  if (updateHistory) {
+    pushRouteState(homePath());
+  }
   renderList();
 }
 
-function openDetail(id) {
+function openDetail(id, updateHistory = true) {
   const post = allPosts.find((p) => String(p.id) === String(id));
   if (!post) return;
+  currentPostId = String(post.id);
   el.toolbar.classList.add("hidden");
   el.listView.classList.add("hidden");
   el.detailView.classList.remove("hidden");
@@ -186,6 +232,10 @@ function openDetail(id) {
     el.detailThumbnail.classList.add("hidden");
   }
   el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
+  if (updateHistory) {
+    pushRouteState(articlePath(post.id));
+  }
+  document.title = `${post.title || "news archive"} | news archive`;
 }
 
 function renderList() {
@@ -219,7 +269,7 @@ function renderList() {
     const title = document.createElement("a");
     title.className = "title";
     title.textContent = p.title || "제목 없음";
-    title.href = "#";
+    title.href = articlePath(p.id);
     title.addEventListener("click", (e) => {
       e.preventDefault();
       openDetail(p.id);
@@ -262,7 +312,25 @@ async function loadData() {
   if (!res.ok) throw new Error(`Failed to load data: ${res.status}`);
   allPosts = await res.json();
   filteredPosts = sortPosts([...allPosts], "latest");
-  renderList();
+  routeFromLocation();
+}
+
+function routeFromLocation() {
+  const path = getRoutedPath();
+  const base = getRepoBasePath();
+  const articlePrefix = `${base}/articles/`;
+  if (path.startsWith(articlePrefix)) {
+    const id = decodeURIComponent(path.slice(articlePrefix.length));
+    const exists = allPosts.find((p) => String(p.id) === String(id));
+    if (exists) {
+      replaceRouteState(path);
+      openDetail(id, false);
+      return;
+    }
+  }
+  replaceRouteState(homePath());
+  goHome(false, false);
+  document.title = "news archive";
 }
 
 function bindEvents() {
@@ -292,6 +360,9 @@ function bindEvents() {
   });
   el.backBtn.addEventListener("click", () => {
     goHome(false);
+  });
+  window.addEventListener("popstate", () => {
+    routeFromLocation();
   });
 }
 
