@@ -76,7 +76,7 @@ h1 a {
 .container {
   max-width: 1120px;
   margin: 0 auto;
-  padding: 12px;
+  padding: 12px 20px;
 }
 
 .toolbar {
@@ -189,7 +189,7 @@ h1 a {
 }
 
 .callout-text {
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1.6;
 }
 
@@ -227,7 +227,13 @@ h1 a {
 }
 
 .detail article li {
+  font-size: 16px;
   line-height: 1.8em;
+  padding-bottom: 16px;
+}
+
+.detail article li:last-child {
+  padding-bottom: 0;
 }
 
 .hidden {
