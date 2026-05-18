@@ -375,6 +375,190 @@ def _fallback_ai_summary(title: str, text: str) -> str:
     )
 
 
+def _normalize_summary_sentence(text: str) -> str:
+    s = clean_text(text).strip(" -")
+    if not s:
+        return ""
+    if s[-1] not in ".!?。다":
+        s = s + "."
+    return s
+
+
+def _normalize_compare_text(text: str) -> str:
+    return re.sub(r"\s+", " ", clean_text(text)).strip().lower()
+
+
+def _split_summary_sentences(text: str):
+    chunks = re.split(r"(?<=[.!?。])\s+|(?<=다\.)\s+|(?<=요\.)\s+", clean_text(text))
+    out = []
+    seen = set()
+    for chunk in chunks:
+        sentence = _normalize_summary_sentence(chunk)
+        if not sentence:
+            continue
+        key = _normalize_compare_text(sentence)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(sentence)
+    return out
+
+
+def _parse_ai_summary(text: str) -> dict:
+    title = ""
+    takeaway = ""
+    points = []
+    for raw in str(text or "").splitlines():
+        line = clean_text(raw)
+        if not line:
+            continue
+        if line.startswith("제목:"):
+            title = clean_text(line.replace("제목:", "", 1))
+            continue
+        if line.startswith("핵심 요약:"):
+            takeaway = clean_text(line.replace("핵심 요약:", "", 1))
+            continue
+        if line.startswith("- 주요 포인트:"):
+            point = clean_text(line.replace("- 주요 포인트:", "", 1))
+            if point:
+                points.append(point)
+            continue
+        if line.startswith("주요 포인트:"):
+            point = clean_text(line.replace("주요 포인트:", "", 1))
+            if point:
+                points.append(point)
+    deduped = []
+    seen = set()
+    for point in points:
+        norm = _normalize_compare_text(point)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        deduped.append(_normalize_summary_sentence(point))
+    return {
+        "title": clean_text(title),
+        "takeaway": _normalize_summary_sentence(takeaway),
+        "points": deduped[:3],
+    }
+
+
+def _looks_like_leading_source_lines(points, source: str) -> bool:
+    source_lines = []
+    for raw in str(source or "").splitlines():
+        line = _normalize_compare_text(raw)
+        if line:
+            source_lines.append(line)
+        if len(source_lines) >= 5:
+            break
+    if len(source_lines) < 3 or len(points) < 3:
+        return False
+
+    matches = 0
+    for idx, point in enumerate(points[:3]):
+        norm_point = _normalize_compare_text(point)
+        if not norm_point:
+            continue
+        if idx < len(source_lines) and (
+            norm_point == source_lines[idx]
+            or norm_point in source_lines[idx]
+            or source_lines[idx] in norm_point
+        ):
+            matches += 1
+    return matches >= 2
+
+
+def _is_valid_ai_summary(text: str, source: str) -> bool:
+    parsed = _parse_ai_summary(text)
+    if not parsed["title"] or not parsed["takeaway"] or len(parsed["points"]) < 3:
+        return False
+    if _looks_like_leading_source_lines(parsed["points"], source):
+        return False
+    return True
+
+
+def _compose_ai_summary(title: str, takeaway: str, points) -> str:
+    clean_title = clean_text(title) or "기사요약"
+    clean_takeaway = _normalize_summary_sentence(takeaway)
+    clean_points = []
+    for point in points:
+        sentence = _normalize_summary_sentence(point)
+        if sentence:
+            clean_points.append(sentence)
+        if len(clean_points) >= 3:
+            break
+    if not clean_takeaway or len(clean_points) < 3:
+        return ""
+    return "\n".join(
+        [
+            f"제목: {clean_title[:12]}",
+            f"핵심 요약: {clean_takeaway}",
+            f"- 주요 포인트: {clean_points[0]}",
+            f"- 주요 포인트: {clean_points[1]}",
+            f"- 주요 포인트: {clean_points[2]}",
+        ]
+    )
+
+
+def build_core_summary(title: str, description: str, body_text: str) -> str:
+    source = minimal_context_filter(title, description, body_text)
+    if not source:
+        return ""
+    if OPENAI_API_KEY:
+        try:
+            return llm_core_summary(title, description, source)
+        except Exception:
+            pass
+
+    prompt = (
+        "아래 기사 원문을 한국어로 4~6문장으로 요약해줘.\n"
+        "- 원문 첫 문장을 그대로 복사하지 말고 핵심 사실을 재구성해서 작성\n"
+        "- 기사 핵심 사실, 배경, 영향 중심으로만 정리\n"
+        "- 군더더기 없이 평서문만 출력\n\n"
+        f"기사 제목: {title}\n"
+        f"기사 설명: {description}\n"
+        f"기사 원문: {source}\n"
+    )
+    summary = run_codex_cli_summary(prompt)
+    if _has_readable_content(summary):
+        return clean_text(summary)
+
+    bullet_summary = summarize(title, description, source)
+    if _has_readable_content(bullet_summary):
+        lines = [clean_text(ln.lstrip("- ").strip()) for ln in bullet_summary.splitlines() if clean_text(ln)]
+        return " ".join(lines[:4]).strip()
+    return ""
+
+
+def format_ai_summary_from_core_summary(title: str, core_summary: str) -> str:
+    clean_core = clean_text(core_summary)
+    if not _has_readable_content(clean_core):
+        return ""
+    prompt = (
+        "아래 기사 요약문을 지정 형식으로 다시 작성해줘.\n"
+        "- `주요 포인트`는 원문이나 요약문 첫 3문장을 그대로 복사하지 말고 핵심을 다시 요약한 3문장으로 작성\n"
+        "- 각 `주요 포인트`는 서로 다른 핵심 사실을 담은 1문장이어야 함\n"
+        "- 전체 출력은 아래 형식을 정확히 지킬 것\n\n"
+        "제목: ...\n"
+        "핵심 요약: ...\n"
+        "- 주요 포인트: ...\n"
+        "- 주요 포인트: ...\n"
+        "- 주요 포인트: ...\n\n"
+        f"기사 제목: {title}\n"
+        f"요약문: {clean_core}\n"
+    )
+    structured = run_codex_cli_summary(prompt)
+    return structured if _has_readable_content(structured) else ""
+
+
+def build_ai_summary_from_core_summary(title: str, core_summary: str) -> str:
+    sentences = _split_summary_sentences(core_summary)
+    if len(sentences) < 3:
+        return ""
+    takeaway = " ".join(sentences[:2]).strip()
+    points = sentences[:3]
+    return _compose_ai_summary(title, takeaway, points)
+
+
 def _normalize_ai_summary_text(text: str) -> str:
     if not text:
         return ""
@@ -420,31 +604,18 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
     source = minimal_context_filter(title, description, body_text)
     if not _has_readable_content(source):
         return "요약할 수 없는 내용입니다"
+    core_summary = build_core_summary(title, description, source)
+    if _has_readable_content(core_summary):
+        structured = format_ai_summary_from_core_summary(title, core_summary)
+        if _is_valid_ai_summary(structured, source):
+            return structured
 
-    prompt = (
-        "제공된 기사 원문 내용을 바탕으로 핵심만 요약해줘. "
-        "이때 `핵심 사실이 정리되었습니다.`와 같은 내용 말고, "
-        "기사의 원문 내용을 대상으로 핵심 내용만 정리해줘.\n\n"
-        "요약 기준:\n"
-        "제목: 기사 내용을 포괄하는 제목 (5글자 내외)\n"
-        "핵심 요약 (Key Takeaway): 1~2문장으로 전체 내용 정리\n"
-        "주요 포인트 (Bullet points): 가장 중요한 내용 3가지\n\n"
-        "출력 형식:\n"
-        "제목: ...\n"
-        "핵심 요약: ...\n"
-        "- 주요 포인트: ...\n"
-        "- 주요 포인트: ...\n"
-        "- 주요 포인트: ...\n\n"
-        f"기사 제목: {title}\n"
-        f"기사 설명: {description}\n"
-        f"기사 원문: {source}\n"
-    )
-    summary = run_codex_cli_summary(prompt)
-    if _has_readable_content(summary):
-        return summary
+        fallback_from_summary = build_ai_summary_from_core_summary(title, core_summary)
+        if _is_valid_ai_summary(fallback_from_summary, source):
+            return fallback_from_summary
 
     fallback = _fallback_ai_summary(title, source)
-    return fallback if _has_readable_content(fallback) else "요약할 수 없는 내용입니다"
+    return fallback if _is_valid_ai_summary(fallback, source) else "요약할 수 없는 내용입니다"
 
 
 def format_crawled_body(title: str, description: str, body_text: str) -> str:
