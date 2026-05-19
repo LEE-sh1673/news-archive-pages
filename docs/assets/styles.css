@@ -254,6 +254,9 @@ h1 a {
 
 .popular-rank {
   width: fit-content;
+  height: fit-content;
+  align-self: start;
+  justify-self: start;
   padding: 6px 10px;
   border-radius: 999px;
   background: var(--accent-soft);
