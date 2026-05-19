@@ -1,13 +1,42 @@
 const PAGE_SIZE = 10;
+const HOME_LIST_SIZE = 8;
+const CATEGORIES = ["IT", "경제", "취업"];
+const PERIODS = [
+  { key: "daily", label: "일간" },
+  { key: "weekly", label: "주간" },
+  { key: "monthly", label: "월간" },
+];
+
 let allPosts = [];
+let trendsData = null;
 let filteredPosts = [];
 let page = 1;
 let currentPostId = null;
+let selectedCategory = "IT";
+let selectedPeriod = "weekly";
+let selectedKeyword = "";
+let detailBackPath = null;
 
 const el = {
   homeTitle: document.getElementById("homeTitle"),
   themeToggle: document.getElementById("themeToggle"),
-  toolbar: document.querySelector(".toolbar"),
+  homeView: document.getElementById("homeView"),
+  helperTabs: document.getElementById("helperTabs"),
+  popularMeta: document.getElementById("popularMeta"),
+  popularGrid: document.getElementById("popularGrid"),
+  periodTabs: document.getElementById("periodTabs"),
+  trendMeta: document.getElementById("trendMeta"),
+  trendList: document.getElementById("trendList"),
+  wordCloud: document.getElementById("wordCloud"),
+  keywordResultSection: document.getElementById("keywordResultSection"),
+  keywordResultTitle: document.getElementById("keywordResultTitle"),
+  keywordResultList: document.getElementById("keywordResultList"),
+  keywordClearBtn: document.getElementById("keywordClearBtn"),
+  openNewsListBtn: document.getElementById("openNewsListBtn"),
+  homeListMeta: document.getElementById("homeListMeta"),
+  homeNewsList: document.getElementById("homeNewsList"),
+  newsView: document.getElementById("newsView"),
+  backHomeBtn: document.getElementById("backHomeBtn"),
   searchInput: document.getElementById("searchInput"),
   sortSelect: document.getElementById("sortSelect"),
   categorySelect: document.getElementById("categorySelect"),
@@ -23,6 +52,7 @@ const el = {
   backBtn: document.getElementById("backBtn"),
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
+  detailKeywords: document.getElementById("detailKeywords"),
   detailAiSummary: document.getElementById("detailAiSummary"),
   detailThumbnail: document.getElementById("detailThumbnail"),
   detailBody: document.getElementById("detailBody"),
@@ -40,7 +70,7 @@ function escapeHtml(text) {
 function bulletTextToHtml(text) {
   const lines = String(text || "")
     .split("\n")
-    .map((x) => x.trim())
+    .map((line) => line.trim())
     .filter(Boolean);
   if (lines.length === 0) return "<ul><li>요약 데이터가 없습니다.</li></ul>";
 
@@ -57,7 +87,7 @@ function bulletTextToHtml(text) {
 function aiSummaryToHtml(text) {
   const rawLines = String(text || "")
     .split("\n")
-    .map((x) => x.trim())
+    .map((line) => line.trim())
     .filter(Boolean);
   if (rawLines.length === 0) return "<p>요약할 수 없는 내용입니다.</p>";
 
@@ -75,13 +105,13 @@ function aiSummaryToHtml(text) {
       continue;
     }
     if (line.startsWith("- 주요 포인트:")) {
-      const p = line.replace(/^\-\s*주요 포인트:\s*/, "").trim();
-      if (p) points.push(p);
+      const point = line.replace(/^\-\s*주요 포인트:\s*/, "").trim();
+      if (point) points.push(point);
       continue;
     }
     if (line.startsWith("주요 포인트:")) {
-      const p = line.replace(/^주요 포인트:\s*/, "").trim();
-      if (p) points.push(p);
+      const point = line.replace(/^주요 포인트:\s*/, "").trim();
+      if (point) points.push(point);
     }
   }
 
@@ -89,7 +119,7 @@ function aiSummaryToHtml(text) {
   if (title) parts.push(`<p><strong>제목:</strong> ${escapeHtml(title)}</p>`);
   if (takeaway) parts.push(`<p><strong>핵심 요약:</strong> ${escapeHtml(takeaway)}</p>`);
   if (points.length > 0) {
-    const items = points.map((p) => `<li>${escapeHtml(p)}</li>`).join("");
+    const items = points.map((point) => `<li>${escapeHtml(point)}</li>`).join("");
     parts.push(`<p><strong>주요 포인트</strong></p><ul>${items}</ul>`);
   }
   if (parts.length === 0) return `<p>${escapeHtml(rawLines.join(" "))}</p>`;
@@ -97,8 +127,8 @@ function aiSummaryToHtml(text) {
 }
 
 function parseDate(value) {
-  const d = new Date(value || 0);
-  return Number.isNaN(d.getTime()) ? new Date(0) : d;
+  const date = new Date(value || 0);
+  return Number.isNaN(date.getTime()) ? new Date(0) : date;
 }
 
 function relativeTime(value) {
@@ -106,15 +136,15 @@ function relativeTime(value) {
   const ts = parseDate(value).getTime();
   const diffSec = Math.max(Math.floor((now - ts) / 1000), 0);
   if (diffSec < 60) return `${diffSec}초 전`;
-  const m = Math.floor(diffSec / 60);
-  if (m < 60) return `${m}분 전`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}시간 전`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}일 전`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}개월 전`;
-  return `${Math.floor(mo / 12)}년 전`;
+  const minutes = Math.floor(diffSec / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간 전`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}일 전`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}개월 전`;
+  return `${Math.floor(months / 12)}년 전`;
 }
 
 function normalizePath(path) {
@@ -130,40 +160,65 @@ function getRepoBasePath() {
   if (path === "/" || path === "/index.html") return "";
   if (path.includes("/articles/")) return path.split("/articles/")[0];
   if (path.endsWith("/404.html")) return path.slice(0, -"/404.html".length);
+  if (path.endsWith("/news")) return path.slice(0, -"/news".length);
   return path;
 }
 
-function getRoutedPath() {
-  const url = new URL(window.location.href);
+function getCurrentUrl() {
+  return new URL(window.location.href);
+}
+
+function getRoutedLocation() {
+  const url = getCurrentUrl();
   const routeParam = url.searchParams.get("route");
-  return normalizePath(routeParam || window.location.pathname);
+  const routeUrl = routeParam ? new URL(routeParam, window.location.origin) : url;
+  return {
+    path: normalizePath(routeUrl.pathname),
+    params: routeUrl.searchParams,
+    hash: routeUrl.hash || "",
+  };
 }
 
-function articlePath(id) {
-  return `${getRepoBasePath()}/articles/${encodeURIComponent(id)}`;
+function buildUrl(path, params = {}) {
+  const url = new URL(window.location.origin);
+  url.pathname = normalizePath(path);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    url.searchParams.set(key, String(value));
+  });
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
-function homePath() {
-  return `${getRepoBasePath() || ""}/`;
+function homePath(params = {}) {
+  return buildUrl(`${getRepoBasePath() || ""}/`, params);
+}
+
+function newsPath(params = {}) {
+  return buildUrl(`${getRepoBasePath() || ""}/news`, params);
+}
+
+function articlePath(id, params = {}) {
+  return buildUrl(`${getRepoBasePath() || ""}/articles/${encodeURIComponent(id)}`, params);
 }
 
 function replaceRouteState(path) {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("route");
-  window.history.replaceState({}, "", `${normalizePath(path)}${url.search}${url.hash}`);
+  window.history.replaceState({}, "", path);
 }
 
 function pushRouteState(path) {
-  window.history.pushState({}, "", normalizePath(path));
+  window.history.pushState({}, "", path);
+}
+
+function postTimestamp(post) {
+  return parseDate(post.fetched_at || post.archived_at || post.article_published_at || post.published_at).getTime();
 }
 
 function sortPosts(posts, sortKey) {
   const sorted = [...posts];
-  const fetchedOf = (x) => x.fetched_at || x.archived_at || x.article_published_at || x.published_at;
   if (sortKey === "latest") {
-    sorted.sort((a, b) => parseDate(fetchedOf(b)) - parseDate(fetchedOf(a)));
+    sorted.sort((a, b) => postTimestamp(b) - postTimestamp(a));
   } else if (sortKey === "oldest") {
-    sorted.sort((a, b) => parseDate(fetchedOf(a)) - parseDate(fetchedOf(b)));
+    sorted.sort((a, b) => postTimestamp(a) - postTimestamp(b));
   } else if (sortKey === "title") {
     sorted.sort((a, b) => (a.title || "").localeCompare(b.title || "", "ko"));
   } else if (sortKey === "category") {
@@ -172,70 +227,321 @@ function sortPosts(posts, sortKey) {
   return sorted;
 }
 
-function applyFilters() {
-  const q = el.searchInput.value.trim().toLowerCase();
+function getPostById(id) {
+  return allPosts.find((post) => String(post.id) === String(id)) || null;
+}
+
+function getTrendBucket() {
+  return trendsData?.categories?.[selectedCategory]?.[selectedPeriod] || null;
+}
+
+function getTrendPostIds() {
+  return getTrendBucket()?.popular_post_ids || [];
+}
+
+function getKeywordArticles(keyword) {
+  const bucket = getTrendBucket();
+  if (!bucket || !keyword) return [];
+  const ranked = bucket.trending_keywords || [];
+  const found = ranked.find((item) => item.keyword === keyword);
+  const ids = found?.article_ids || [];
+  const posts = ids.map((id) => getPostById(id)).filter(Boolean);
+  if (posts.length > 0) return posts;
+
+  const start = parseDate(bucket.range_start).getTime();
+  const end = parseDate(bucket.range_end).getTime();
+  return allPosts.filter((post) => {
+    const ts = postTimestamp(post);
+    if (ts < start || ts > end) return false;
+    return (post.keywords || []).includes(keyword);
+  });
+}
+
+function rankDeltaLabel(delta) {
+  if (delta === 999) return { text: "NEW", className: "rank-badge new" };
+  if (delta > 0) return { text: `▲ ${delta}`, className: "rank-badge up" };
+  if (delta < 0) return { text: `▼ ${Math.abs(delta)}`, className: "rank-badge down" };
+  return { text: "유지", className: "rank-badge same" };
+}
+
+function createArticleLink(post, context) {
+  const link = document.createElement("a");
+  link.href = articlePath(post.id, context);
+  link.className = "title";
+  link.textContent = post.title || "제목 없음";
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    openDetail(post.id, context);
+  });
+  return link;
+}
+
+function articleContext(view) {
+  const context = {
+    from: view,
+    category: selectedCategory,
+    period: selectedPeriod,
+  };
+  if (selectedKeyword) context.keyword = selectedKeyword;
+  if (view === "news") {
+    if (el.searchInput.value.trim()) context.search = el.searchInput.value.trim();
+    if (el.sortSelect.value !== "latest") context.sort = el.sortSelect.value;
+    if (el.categorySelect.value !== "all") context.listCategory = el.categorySelect.value;
+    if (page > 1) context.page = page;
+  }
+  return context;
+}
+
+function syncNewsRoute() {
+  replaceRouteState(
+    newsPath({
+      category: el.categorySelect.value !== "all" ? el.categorySelect.value : "",
+      search: el.searchInput.value.trim(),
+      sort: el.sortSelect.value !== "latest" ? el.sortSelect.value : "",
+      period: selectedPeriod,
+      page: page > 1 ? page : "",
+    }),
+  );
+}
+
+function renderHelperTabs() {
+  el.helperTabs.textContent = "";
+  CATEGORIES.forEach((category) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `tab-btn${selectedCategory === category ? " active" : ""}`;
+    button.textContent = category;
+    button.addEventListener("click", () => {
+      selectedCategory = category;
+      selectedKeyword = "";
+      renderHome();
+      replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod }));
+    });
+    el.helperTabs.appendChild(button);
+  });
+}
+
+function renderPeriodTabs() {
+  el.periodTabs.textContent = "";
+  PERIODS.forEach((period) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `period-btn${selectedPeriod === period.key ? " active" : ""}`;
+    button.textContent = period.label;
+    button.addEventListener("click", () => {
+      selectedPeriod = period.key;
+      selectedKeyword = "";
+      renderHome();
+      replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod }));
+    });
+    el.periodTabs.appendChild(button);
+  });
+}
+
+function renderPopularPosts() {
+  const bucket = getTrendBucket();
+  const ids = bucket?.popular_post_ids || [];
+  const posts = ids.map((id) => getPostById(id)).filter(Boolean);
+  el.popularGrid.textContent = "";
+  el.popularMeta.textContent = `${selectedCategory} · ${PERIODS.find((item) => item.key === selectedPeriod)?.label || ""} 기준`;
+
+  posts.forEach((post, index) => {
+    const card = document.createElement("article");
+    card.className = `popular-card ${index === 0 ? "hero" : "side"}`;
+    card.addEventListener("click", () => openDetail(post.id, articleContext("home")));
+
+    const badge = document.createElement("span");
+    badge.className = "popular-rank";
+    badge.textContent = `TOP ${index + 1}`;
+
+    const title = document.createElement("h3");
+    title.className = "popular-title";
+    title.textContent = post.title || "제목 없음";
+
+    const summary = document.createElement("p");
+    summary.className = "popular-summary";
+    summary.textContent = String(post.summary || "").replace(/^\-\s*/gm, " ").replace(/\s+/g, " ").trim();
+
+    const meta = document.createElement("p");
+    meta.className = "meta";
+    meta.textContent = `${post.category || "-"} · 수집 ${relativeTime(post.fetched_at || post.archived_at)}`;
+
+    card.appendChild(badge);
+    card.appendChild(title);
+    card.appendChild(summary);
+    card.appendChild(meta);
+    el.popularGrid.appendChild(card);
+  });
+}
+
+function renderTrendList() {
+  const bucket = getTrendBucket();
+  const trends = bucket?.trending_keywords || [];
+  el.trendList.textContent = "";
+  el.trendMeta.textContent = bucket ? `${bucket.range_start.slice(0, 10)} ~ ${bucket.range_end.slice(0, 10)}` : "";
+
+  trends.forEach((item) => {
+    const li = document.createElement("li");
+    li.className = `trend-item${selectedKeyword === item.keyword ? " active" : ""}`;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "trend-btn";
+    button.addEventListener("click", () => {
+      selectedKeyword = selectedKeyword === item.keyword ? "" : item.keyword;
+      renderHome();
+      replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod, keyword: selectedKeyword }));
+    });
+
+    const rank = document.createElement("span");
+    rank.className = "trend-rank";
+    rank.textContent = String(item.rank);
+
+    const keyword = document.createElement("span");
+    keyword.className = "trend-keyword";
+    keyword.textContent = item.keyword;
+
+    const count = document.createElement("span");
+    count.className = "trend-count";
+    count.textContent = `${item.count}건`;
+
+    const delta = rankDeltaLabel(item.delta);
+    const badge = document.createElement("span");
+    badge.className = delta.className;
+    badge.textContent = delta.text;
+
+    button.appendChild(rank);
+    button.appendChild(keyword);
+    button.appendChild(count);
+    button.appendChild(badge);
+    li.appendChild(button);
+    el.trendList.appendChild(li);
+  });
+}
+
+function renderWordCloud() {
+  const cloud = getTrendBucket()?.word_cloud || [];
+  el.wordCloud.textContent = "";
+  cloud.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `cloud-word${selectedKeyword === item.keyword ? " active" : ""}`;
+    button.style.setProperty("--weight", String(item.weight || 0.2));
+    button.style.setProperty("--index", String(index));
+    button.textContent = item.keyword;
+    button.addEventListener("click", () => {
+      selectedKeyword = selectedKeyword === item.keyword ? "" : item.keyword;
+      renderHome();
+      replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod, keyword: selectedKeyword }));
+    });
+    el.wordCloud.appendChild(button);
+  });
+}
+
+function renderKeywordResults() {
+  const keyword = selectedKeyword;
+  if (!keyword) {
+    el.keywordResultSection.classList.add("hidden");
+    el.keywordResultList.textContent = "";
+    return;
+  }
+
+  const posts = sortPosts(getKeywordArticles(keyword), "latest");
+  el.keywordResultSection.classList.remove("hidden");
+  el.keywordResultTitle.textContent = `"${keyword}" 키워드 기사`;
+  el.keywordResultList.textContent = "";
+
+  posts.slice(0, 10).forEach((post) => {
+    const item = document.createElement("article");
+    item.className = "mini-item";
+
+    const title = createArticleLink(post, articleContext("home"));
+    const summary = document.createElement("p");
+    summary.className = "mini-summary";
+    summary.textContent = String(post.summary || "").replace(/^\-\s*/gm, " ").replace(/\s+/g, " ").trim();
+
+    const meta = document.createElement("p");
+    meta.className = "meta";
+    meta.textContent = `${post.category || "-"} · 기사 생성일 ${post.article_published_at || post.published_at || "-"}`;
+
+    item.appendChild(title);
+    item.appendChild(summary);
+    item.appendChild(meta);
+    el.keywordResultList.appendChild(item);
+  });
+}
+
+function renderHomeNewsList() {
+  const posts = sortPosts(
+    allPosts.filter((post) => {
+      if (post.category !== selectedCategory) return false;
+      if (!selectedKeyword) return true;
+      return (post.keywords || []).includes(selectedKeyword);
+    }),
+    "latest",
+  );
+  el.homeListMeta.textContent = selectedKeyword
+    ? `${selectedCategory} · "${selectedKeyword}" 포함 기사 ${posts.length}건`
+    : `${selectedCategory} 최신 기사 ${posts.length}건`;
+  el.homeNewsList.textContent = "";
+
+  posts.slice(0, HOME_LIST_SIZE).forEach((post, idx) => {
+    const item = document.createElement("div");
+    item.className = "item";
+
+    const head = document.createElement("div");
+    head.className = "item-head";
+
+    const rank = document.createElement("div");
+    rank.className = "rank";
+    rank.textContent = `${idx + 1}.`;
+
+    const body = document.createElement("div");
+    body.appendChild(createArticleLink(post, articleContext("home")));
+
+    const summary = document.createElement("div");
+    summary.className = "summary";
+    summary.textContent = post.summary || "";
+
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = `수집 ${relativeTime(post.fetched_at || post.archived_at)} | ${post.category || "-"} | 키워드 ${(post.keywords || []).slice(0, 4).join(", ")}`;
+
+    body.appendChild(summary);
+    body.appendChild(meta);
+    head.appendChild(rank);
+    head.appendChild(body);
+    item.appendChild(head);
+    el.homeNewsList.appendChild(item);
+  });
+}
+
+function renderHome() {
+  renderHelperTabs();
+  renderPeriodTabs();
+  renderPopularPosts();
+  renderTrendList();
+  renderWordCloud();
+  renderKeywordResults();
+  renderHomeNewsList();
+}
+
+function applyFilters(updateHistory = false, resetPage = true) {
+  const query = el.searchInput.value.trim().toLowerCase();
   const category = el.categorySelect.value;
-  const base = allPosts.filter((p) => {
-    if (category !== "all" && p.category !== category) return false;
-    if (!q) return true;
-    const hay = `${p.title || ""} ${p.summary || ""} ${p.body || ""}`.toLowerCase();
-    return hay.includes(q);
+  const base = allPosts.filter((post) => {
+    if (category !== "all" && post.category !== category) return false;
+    const keywords = (post.keywords || []).join(" ");
+    const haystack = `${post.title || ""} ${post.summary || ""} ${post.body || ""} ${keywords}`.toLowerCase();
+    if (!query) return true;
+    return haystack.includes(query);
   });
   filteredPosts = sortPosts(base, el.sortSelect.value);
-  page = 1;
+  if (resetPage) page = 1;
   renderList();
-}
-
-function goHome(resetAll = false, updateHistory = true) {
-  if (resetAll) {
-    el.searchInput.value = "";
-    el.sortSelect.value = "latest";
-    el.categorySelect.value = "all";
-    filteredPosts = sortPosts([...allPosts], "latest");
-    page = 1;
-  }
-  currentPostId = null;
-  el.detailView.classList.add("hidden");
-  el.listView.classList.remove("hidden");
-  el.toolbar.classList.remove("hidden");
   if (updateHistory) {
-    pushRouteState(homePath());
+    syncNewsRoute();
   }
-  renderList();
-}
-
-function openDetail(id, updateHistory = true) {
-  const post = allPosts.find((p) => String(p.id) === String(id));
-  if (!post) return;
-  currentPostId = String(post.id);
-  el.toolbar.classList.add("hidden");
-  el.listView.classList.add("hidden");
-  el.detailView.classList.remove("hidden");
-
-  const a = document.createElement("a");
-  a.href = post.url || "#";
-  a.target = "_blank";
-  a.rel = "noopener noreferrer";
-  a.textContent = post.title || "제목 없음";
-
-  el.detailTitle.textContent = "";
-  el.detailTitle.appendChild(a);
-  const articlePublishedAt = post.article_published_at || post.published_at || "-";
-  const fetchedAt = post.fetched_at || post.archived_at || "-";
-  el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${articlePublishedAt} | 수집일: ${fetchedAt}`;
-  el.detailAiSummary.innerHTML = aiSummaryToHtml(post.ai_summary || "요약할 수 없는 내용입니다");
-  if (post.thumbnail) {
-    el.detailThumbnail.src = post.thumbnail;
-    el.detailThumbnail.classList.remove("hidden");
-  } else {
-    el.detailThumbnail.removeAttribute("src");
-    el.detailThumbnail.classList.add("hidden");
-  }
-  el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
-  if (updateHistory) {
-    pushRouteState(articlePath(post.id));
-  }
-  document.title = `${post.title || "news archive"} | news archive`;
 }
 
 function renderList() {
@@ -254,7 +560,7 @@ function renderList() {
   el.lastBtn.disabled = page >= totalPages;
 
   el.listContainer.textContent = "";
-  rows.forEach((p, idx) => {
+  rows.forEach((post, idx) => {
     const item = document.createElement("div");
     item.className = "item";
 
@@ -266,26 +572,16 @@ function renderList() {
     rank.textContent = `${start + idx + 1}.`;
 
     const body = document.createElement("div");
-    const title = document.createElement("a");
-    title.className = "title";
-    title.textContent = p.title || "제목 없음";
-    title.href = articlePath(p.id);
-    title.addEventListener("click", (e) => {
-      e.preventDefault();
-      openDetail(p.id);
-    });
+    body.appendChild(createArticleLink(post, articleContext("news")));
 
     const summary = document.createElement("div");
     summary.className = "summary";
-    summary.textContent = p.summary || "";
+    summary.textContent = post.summary || "";
 
     const meta = document.createElement("div");
     meta.className = "meta";
-    const articlePublishedAt = p.article_published_at || p.published_at || "-";
-    const fetchedAt = p.fetched_at || p.archived_at || "-";
-    meta.textContent = `수집 ${relativeTime(fetchedAt)} | ${p.category || "-"} | 기사 생성일 ${articlePublishedAt}`;
+    meta.textContent = `수집 ${relativeTime(post.fetched_at || post.archived_at)} | ${post.category || "-"} | 기사 생성일 ${post.article_published_at || post.published_at || "-"} | 키워드 ${(post.keywords || []).slice(0, 5).join(", ")}`;
 
-    body.appendChild(title);
     body.appendChild(summary);
     body.appendChild(meta);
     head.appendChild(rank);
@@ -293,6 +589,162 @@ function renderList() {
     item.appendChild(head);
     el.listContainer.appendChild(item);
   });
+}
+
+function openHome(updateHistory = true) {
+  currentPostId = null;
+  el.homeView.classList.remove("hidden");
+  el.newsView.classList.add("hidden");
+  el.detailView.classList.add("hidden");
+  renderHome();
+  if (updateHistory) {
+    pushRouteState(homePath({ category: selectedCategory, period: selectedPeriod, keyword: selectedKeyword }));
+  }
+  document.title = "news archive";
+}
+
+function openNewsList(updateHistory = true) {
+  currentPostId = null;
+  el.homeView.classList.add("hidden");
+  el.newsView.classList.remove("hidden");
+  el.detailView.classList.add("hidden");
+  applyFilters(false, false);
+  if (updateHistory) {
+    pushRouteState(
+      newsPath({
+        category: el.categorySelect.value !== "all" ? el.categorySelect.value : "",
+        search: el.searchInput.value.trim(),
+        sort: el.sortSelect.value !== "latest" ? el.sortSelect.value : "",
+        period: selectedPeriod,
+        page: page > 1 ? page : "",
+      }),
+    );
+  }
+  document.title = "news archive | list";
+}
+
+function openDetail(id, context = {}, updateHistory = true) {
+  const post = getPostById(id);
+  if (!post) return;
+
+  currentPostId = String(post.id);
+  detailBackPath = context.from === "news"
+    ? newsPath({
+        category: context.listCategory || "",
+        search: context.search || context.keyword || "",
+        sort: context.sort || "",
+        period: context.period || selectedPeriod,
+      })
+    : homePath({
+        category: context.category || selectedCategory,
+        period: context.period || selectedPeriod,
+        keyword: context.keyword || "",
+      });
+
+  el.homeView.classList.add("hidden");
+  el.newsView.classList.add("hidden");
+  el.detailView.classList.remove("hidden");
+
+  const anchor = document.createElement("a");
+  anchor.href = post.url || "#";
+  anchor.target = "_blank";
+  anchor.rel = "noopener noreferrer";
+  anchor.textContent = post.title || "제목 없음";
+
+  el.detailTitle.textContent = "";
+  el.detailTitle.appendChild(anchor);
+  el.detailMeta.textContent = `카테고리: ${post.category || "-"} | 기사 생성일: ${post.article_published_at || post.published_at || "-"} | 수집일: ${post.fetched_at || post.archived_at || "-"}`;
+  el.detailKeywords.textContent = "";
+  (post.keywords || []).slice(0, 8).forEach((keyword) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "keyword-chip";
+    chip.textContent = keyword;
+    chip.addEventListener("click", () => {
+      selectedCategory = post.category || selectedCategory;
+      selectedKeyword = keyword;
+      openHome(true);
+    });
+    el.detailKeywords.appendChild(chip);
+  });
+  el.detailAiSummary.innerHTML = aiSummaryToHtml(post.ai_summary || "요약할 수 없는 내용입니다");
+  if (post.thumbnail) {
+    el.detailThumbnail.src = post.thumbnail;
+    el.detailThumbnail.classList.remove("hidden");
+  } else {
+    el.detailThumbnail.removeAttribute("src");
+    el.detailThumbnail.classList.add("hidden");
+  }
+  el.detailBody.innerHTML = bulletTextToHtml(post.body || post.summary || "");
+  if (updateHistory) {
+    pushRouteState(articlePath(post.id, context));
+  }
+  document.title = `${post.title || "news archive"} | news archive`;
+}
+
+function routeFromLocation() {
+  const routed = getRoutedLocation();
+  const path = routed.path;
+  const base = getRepoBasePath();
+  const articlePrefix = `${base}/articles/`;
+  const newsRoute = normalizePath(`${base}/news`);
+
+  const categoryParam = routed.params.get("category");
+  const periodParam = routed.params.get("period");
+  const keywordParam = routed.params.get("keyword");
+  if (CATEGORIES.includes(categoryParam)) selectedCategory = categoryParam;
+  if (PERIODS.some((period) => period.key === periodParam)) selectedPeriod = periodParam;
+  selectedKeyword = keywordParam || "";
+
+  if (path.startsWith(articlePrefix)) {
+    const id = decodeURIComponent(path.slice(articlePrefix.length));
+    const exists = getPostById(id);
+    if (exists) {
+      openDetail(id, {
+        from: routed.params.get("from") || "home",
+        category: routed.params.get("category") || selectedCategory,
+        period: routed.params.get("period") || selectedPeriod,
+        keyword: routed.params.get("keyword") || "",
+        search: routed.params.get("search") || "",
+        sort: routed.params.get("sort") || "",
+        listCategory: routed.params.get("listCategory") || routed.params.get("category") || "",
+      }, false);
+      replaceRouteState(articlePath(id, Object.fromEntries(routed.params.entries())));
+      return;
+    }
+  }
+
+  if (path === newsRoute) {
+    el.categorySelect.value = CATEGORIES.includes(routed.params.get("category")) ? routed.params.get("category") : "all";
+    el.searchInput.value = routed.params.get("search") || routed.params.get("keyword") || "";
+    el.sortSelect.value = ["latest", "oldest", "title", "category"].includes(routed.params.get("sort"))
+      ? routed.params.get("sort")
+      : "latest";
+    const pageParam = Number(routed.params.get("page") || "1");
+    page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
+    openNewsList(false);
+    replaceRouteState(newsPath(Object.fromEntries(routed.params.entries())));
+    return;
+  }
+
+  openHome(false);
+  replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod, keyword: selectedKeyword }));
+}
+
+async function loadData() {
+  const [archiveRes, trendsRes] = await Promise.all([
+    fetch("./data/news_archive.json", { cache: "no-store" }),
+    fetch("./data/trends.json", { cache: "no-store" }),
+  ]);
+  if (!archiveRes.ok) throw new Error(`Failed to load data: ${archiveRes.status}`);
+  if (!trendsRes.ok) throw new Error(`Failed to load trends: ${trendsRes.status}`);
+
+  allPosts = sortPosts(await archiveRes.json(), "latest");
+  trendsData = await trendsRes.json();
+  selectedCategory = trendsData.default_category || selectedCategory;
+  selectedPeriod = trendsData.default_period || selectedPeriod;
+  filteredPosts = sortPosts([...allPosts], "latest");
+  routeFromLocation();
 }
 
 function applyTheme(mode) {
@@ -307,59 +759,54 @@ function toggleTheme() {
   applyTheme(now === "dark" ? "light" : "dark");
 }
 
-async function loadData() {
-  const res = await fetch("./data/news_archive.json", { cache: "no-store" });
-  if (!res.ok) throw new Error(`Failed to load data: ${res.status}`);
-  allPosts = await res.json();
-  filteredPosts = sortPosts([...allPosts], "latest");
-  routeFromLocation();
-}
-
-function routeFromLocation() {
-  const path = getRoutedPath();
-  const base = getRepoBasePath();
-  const articlePrefix = `${base}/articles/`;
-  if (path.startsWith(articlePrefix)) {
-    const id = decodeURIComponent(path.slice(articlePrefix.length));
-    const exists = allPosts.find((p) => String(p.id) === String(id));
-    if (exists) {
-      replaceRouteState(path);
-      openDetail(id, false);
-      return;
-    }
-  }
-  replaceRouteState(homePath());
-  goHome(false, false);
-  document.title = "news archive";
-}
-
 function bindEvents() {
-  el.homeTitle.addEventListener("click", (e) => {
-    e.preventDefault();
-    goHome(true);
+  el.homeTitle.addEventListener("click", (event) => {
+    event.preventDefault();
+    openHome(true);
   });
   el.themeToggle.addEventListener("click", toggleTheme);
-  el.searchInput.addEventListener("input", applyFilters);
-  el.sortSelect.addEventListener("change", applyFilters);
-  el.categorySelect.addEventListener("change", applyFilters);
+  el.openNewsListBtn.addEventListener("click", () => {
+    el.categorySelect.value = selectedCategory;
+    el.searchInput.value = selectedKeyword;
+    el.sortSelect.value = "latest";
+    openNewsList(true);
+  });
+  el.backHomeBtn.addEventListener("click", () => openHome(true));
+  el.keywordClearBtn.addEventListener("click", () => {
+    selectedKeyword = "";
+    renderHome();
+    replaceRouteState(homePath({ category: selectedCategory, period: selectedPeriod }));
+  });
+  el.searchInput.addEventListener("input", () => applyFilters(true));
+  el.sortSelect.addEventListener("change", () => applyFilters(true));
+  el.categorySelect.addEventListener("change", () => applyFilters(true));
   el.firstBtn.addEventListener("click", () => {
     page = 1;
     renderList();
+    syncNewsRoute();
   });
   el.prevBtn.addEventListener("click", () => {
     page -= 1;
     renderList();
+    syncNewsRoute();
   });
   el.nextBtn.addEventListener("click", () => {
     page += 1;
     renderList();
+    syncNewsRoute();
   });
   el.lastBtn.addEventListener("click", () => {
     page = Math.max(Math.ceil(filteredPosts.length / PAGE_SIZE), 1);
     renderList();
+    syncNewsRoute();
   });
   el.backBtn.addEventListener("click", () => {
-    goHome(false);
+    if (detailBackPath) {
+      pushRouteState(detailBackPath);
+      routeFromLocation();
+      return;
+    }
+    openHome(true);
   });
   window.addEventListener("popstate", () => {
     routeFromLocation();
@@ -368,6 +815,7 @@ function bindEvents() {
 
 applyTheme(localStorage.getItem("theme") || "light");
 bindEvents();
-loadData().catch((err) => {
-  el.metaLine.textContent = `데이터 로드 실패: ${err.message}`;
+loadData().catch((error) => {
+  el.homeView.classList.remove("hidden");
+  el.homeView.innerHTML = `<p class="meta">데이터 로드 실패: ${escapeHtml(error.message)}</p>`;
 });

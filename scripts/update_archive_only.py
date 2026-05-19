@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
+from build_data import extract_keywords
+
 try:
     from playwright.sync_api import sync_playwright
 except Exception:
@@ -1441,6 +1443,7 @@ def main() -> int:
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
             ai_summary = build_ai_summary(title, desc, body_raw)
+            keywords = extract_keywords(title, body_raw or formatted_body or desc, ai_summary or formatted_body or desc)
             # Thumbnail generation is temporarily disabled.
             # thumb = generate_thumbnail(rid, title, body_raw)
             thumb = ""
@@ -1463,6 +1466,7 @@ def main() -> int:
                     "published_at": published,
                     "archived_at": now.isoformat(),
                     "source": "NewsAPI",
+                    "keywords": keywords,
                 }
             )
 
