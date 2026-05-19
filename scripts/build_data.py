@@ -7,6 +7,11 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+try:
+    from khaiii import KhaiiiApi
+except Exception:
+    KhaiiiApi = None
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
 DEFAULT_OUT = ROOT / "docs" / "data" / "news_archive.json"
@@ -20,6 +25,41 @@ PERIODS = {
     "monthly": timedelta(days=30),
 }
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|[0-9]{2,}|[가-힣]{2,}")
+ALLOWED_KHAIII_TAGS = {"NNG", "NNP", "NP", "NR", "SL", "SH"}
+EXCLUDED_KHAIII_TAGS = {
+    "VV",
+    "VA",
+    "VX",
+    "VCP",
+    "VCN",
+    "MM",
+    "MAG",
+    "MAJ",
+    "JKS",
+    "JKC",
+    "JKG",
+    "JKO",
+    "JKB",
+    "JKV",
+    "JKQ",
+    "JX",
+    "JC",
+    "EP",
+    "EF",
+    "EC",
+    "ETN",
+    "ETM",
+    "XSN",
+    "XSV",
+    "XSA",
+    "XR",
+    "SF",
+    "SP",
+    "SS",
+    "SE",
+    "SO",
+    "SW",
+}
 KOREAN_SUFFIXES = (
     "으로부터",
     "에서부터",
@@ -138,6 +178,7 @@ STOPWORDS = {
     "사업",
     "대표",
     "관계자",
+    "함께",
     "기준으",
     "news",
     "photo",
@@ -161,6 +202,69 @@ STOPWORDS = {
     "alert",
     "loading",
 }
+DEPENDENT_NOUN_STOPWORDS = {
+    "것",
+    "수",
+    "등",
+    "점",
+    "명",
+    "건",
+    "분",
+    "층",
+    "곳",
+    "쪽",
+    "차",
+    "안",
+    "밖",
+    "후",
+    "전",
+}
+FALLBACK_NON_NOUN_SUFFIXES = (
+    "하는",
+    "하며",
+    "하고",
+    "하여",
+    "해서",
+    "했다",
+    "했던",
+    "되는",
+    "되며",
+    "되고",
+    "됐다",
+    "된다",
+    "따른",
+    "위한",
+    "맞춘",
+    "겪는",
+    "나선",
+    "보인",
+    "제시한",
+    "추진한",
+    "참여한",
+    "기반한",
+    "확대한",
+    "강화한",
+    "발표한",
+    "출시한",
+    "있도록",
+    "하도록",
+    "되도록",
+    "될",
+)
+_KHAIII_API = None
+
+
+def get_khaiii_api():
+    global _KHAIII_API
+    if KhaiiiApi is None:
+        return None
+    if _KHAIII_API is not None:
+        return _KHAIII_API
+    try:
+        _KHAIII_API = KhaiiiApi()
+    except Exception:
+        _KHAIII_API = None
+    return _KHAIII_API
 
 
 def _fix_mojibake(text: str) -> str:
@@ -269,8 +373,55 @@ def normalize_token(token: str) -> str:
     return out
 
 
+def extract_tokens_with_khaiii(text: str):
+    api = get_khaiii_api()
+    if api is None:
+        return []
+
+    tokens = []
+    source = sanitize(text, "body")
+    if not source:
+        return tokens
+
+    try:
+        for word in api.analyze(source):
+            for morph in word.morphs:
+                lex = getattr(morph, "lex", "")
+                tag = getattr(morph, "tag", "")
+                if tag not in ALLOWED_KHAIII_TAGS or tag in EXCLUDED_KHAIII_TAGS:
+                    continue
+                token = normalize_token(lex)
+                if not token:
+                    continue
+                if token in DEPENDENT_NOUN_STOPWORDS:
+                    continue
+                if tag == "NR" and len(token) < 2:
+                    continue
+                tokens.append(token)
+    except Exception:
+        return []
+    return tokens
+
+
+def extract_tokens_with_fallback(text: str):
+    tokens = []
+    for raw in TOKEN_RE.findall(sanitize(text)):
+        token = normalize_token(raw)
+        if not token:
+            continue
+        if re.fullmatch(r"[가-힣]{3,}", token) and token.endswith(FALLBACK_NON_NOUN_SUFFIXES):
+            continue
+        if token in DEPENDENT_NOUN_STOPWORDS:
+            continue
+        tokens.append(token)
+    return tokens
+
+
 def extract_tokens(text: str):
-    return [normalize_token(token) for token in TOKEN_RE.findall(sanitize(text))]
+    tokens = extract_tokens_with_khaiii(text)
+    if tokens:
+        return tokens
+    return extract_tokens_with_fallback(text)
 
 
 def split_context_units(text: str):
