@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
-from build_data import extract_keywords
+from build_data import extract_keywords, filter_lines_by_title_relevance
 
 try:
     from playwright.sync_api import sync_playwright
@@ -171,6 +171,7 @@ def filter_scraped_body_text(title: str, body_text: str) -> str:
         return ""
     lines = [ln for ln in source.splitlines() if ln.strip()]
     lines = _simple_ui_noise_filter(lines)
+    lines = filter_lines_by_title_relevance(title, lines) or lines
     baseline = "\n".join(lines)[:MAX_SOURCE_CHARS]
     if not baseline:
         return ""
@@ -179,6 +180,7 @@ def filter_scraped_body_text(title: str, body_text: str) -> str:
     codex_filtered = _codex_filter_unrelated_lines(title, baseline)
     if codex_filtered:
         final_lines = _simple_ui_noise_filter(codex_filtered.splitlines())
+        final_lines = filter_lines_by_title_relevance(title, final_lines) or final_lines
         if final_lines:
             return "\n".join(final_lines)[:MAX_SOURCE_CHARS]
     return baseline

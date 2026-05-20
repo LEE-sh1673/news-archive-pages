@@ -8,9 +8,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
-    from khaiii import KhaiiiApi
+    from kiwipiepy import Kiwi
 except Exception:
-    KhaiiiApi = None
+    Kiwi = None
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
@@ -25,40 +25,62 @@ PERIODS = {
     "monthly": timedelta(days=30),
 }
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|[0-9]{2,}|[가-힣]{2,}")
-ALLOWED_KHAIII_TAGS = {"NNG", "NNP", "NP", "NR", "SL", "SH"}
-EXCLUDED_KHAIII_TAGS = {
-    "VV",
-    "VA",
-    "VX",
-    "VCP",
-    "VCN",
-    "MM",
-    "MAG",
-    "MAJ",
-    "JKS",
-    "JKC",
-    "JKG",
-    "JKO",
-    "JKB",
-    "JKV",
-    "JKQ",
-    "JX",
-    "JC",
-    "EP",
-    "EF",
-    "EC",
-    "ETN",
-    "ETM",
-    "XSN",
-    "XSV",
-    "XSA",
-    "XR",
-    "SF",
-    "SP",
-    "SS",
-    "SE",
-    "SO",
-    "SW",
+ALLOWED_KIWI_TAGS = {"NNG", "NNP", "NP", "NR", "SL", "SH"}
+UI_LINE_MENU_TERMS = {
+    "경향신문",
+    "오피니언",
+    "라이프",
+    "공유하기",
+    "뉴스플리",
+    "글자크기",
+    "기사듣기",
+    "메뉴",
+    "기자메모",
+    "새로고침",
+    "유산소",
+    "주요",
+    "지금",
+    "스포츠",
+    "과학",
+    "환경",
+    "뉴스레터",
+    "사진",
+    "인터랙티브",
+    "기획",
+    "연재",
+    "기사제보",
+    "디지털",
+    "지면보기",
+    "초판보기",
+    "보도자료",
+    "회사소개",
+    "온라인광고",
+    "사업제휴",
+    "저작권",
+    "콘텐츠",
+    "고충처리",
+    "help",
+    "family",
+    "site",
+    "스포츠경향",
+    "주간경향",
+    "레이디경향",
+    "이용약관",
+    "개인정보처리방침",
+    "사이트맵",
+    "고객센터",
+    "등록번호",
+    "등록일자",
+    "발행인",
+    "편집인",
+    "청소년보호책임자",
+    "facebook",
+    "youtube",
+    "instagram",
+    "google",
+    "rss",
+    "상단",
+    "페이지",
 }
 KOREAN_SUFFIXES = (
     "으로부터",
@@ -259,20 +281,20 @@ FALLBACK_NON_NOUN_SUFFIXES = (
     "되도록",
     "될",
 )
-_KHAIII_API = None
+_KIWI = None
 
 
-def get_khaiii_api():
-    global _KHAIII_API
-    if KhaiiiApi is None:
+def get_kiwi():
+    global _KIWI
+    if Kiwi is None:
         return None
-    if _KHAIII_API is not None:
-        return _KHAIII_API
+    if _KIWI is not None:
+        return _KIWI
     try:
-        _KHAIII_API = KhaiiiApi()
+        _KIWI = Kiwi()
     except Exception:
-        _KHAIII_API = None
-    return _KHAIII_API
+        _KIWI = None
+    return _KIWI
 
 
 def _fix_mojibake(text: str) -> str:
@@ -381,9 +403,9 @@ def normalize_token(token: str) -> str:
     return out
 
 
-def extract_tokens_with_khaiii(text: str):
-    api = get_khaiii_api()
-    if api is None:
+def extract_tokens_with_kiwi(text: str):
+    kiwi = get_kiwi()
+    if kiwi is None:
         return []
 
     tokens = []
@@ -392,20 +414,17 @@ def extract_tokens_with_khaiii(text: str):
         return tokens
 
     try:
-        for word in api.analyze(source):
-            for morph in word.morphs:
-                lex = getattr(morph, "lex", "")
-                tag = getattr(morph, "tag", "")
-                if tag not in ALLOWED_KHAIII_TAGS or tag in EXCLUDED_KHAIII_TAGS:
-                    continue
-                token = normalize_token(lex)
-                if not token:
-                    continue
-                if token in DEPENDENT_NOUN_STOPWORDS:
-                    continue
-                if tag == "NR" and len(token) < 2:
-                    continue
-                tokens.append(token)
+        for morph in kiwi.tokenize(source):
+            if morph.tag not in ALLOWED_KIWI_TAGS:
+                continue
+            token = normalize_token(morph.form)
+            if not token:
+                continue
+            if token in DEPENDENT_NOUN_STOPWORDS:
+                continue
+            if morph.tag == "NR" and len(token) < 2:
+                continue
+            tokens.append(token)
     except Exception:
         return []
     return tokens
@@ -426,10 +445,97 @@ def extract_tokens_with_fallback(text: str):
 
 
 def extract_tokens(text: str):
-    tokens = extract_tokens_with_khaiii(text)
+    tokens = extract_tokens_with_kiwi(text)
     if tokens:
         return tokens
     return extract_tokens_with_fallback(text)
+
+
+def extract_token_set(text: str):
+    return {token for token in extract_tokens(text) if token}
+
+
+def build_relevance_context(title: str, lines):
+    title_terms = extract_token_set(title)
+    if not title_terms:
+        title_terms = set()
+
+    line_terms = []
+    seed_counts = Counter()
+    for line in lines:
+        terms = extract_token_set(line)
+        line_terms.append((line, terms))
+        if title_terms and title_terms.intersection(terms):
+            for term in terms:
+                seed_counts[term] += 1
+
+    if not title_terms and line_terms:
+        for _, terms in line_terms[:8]:
+            for term in terms:
+                seed_counts[term] += 1
+
+    context_terms = set(title_terms)
+    for term, _ in seed_counts.most_common(24):
+        context_terms.add(term)
+    return title_terms, context_terms, line_terms
+
+
+def classify_line_relevance(title: str, line: str, context_terms=None, title_terms=None):
+    clean_line = sanitize(line, "body")
+    if not clean_line:
+        return False, {"reason": "empty", "terms": set()}
+
+    if title_terms is None:
+        title_terms = extract_token_set(title)
+    terms = extract_token_set(clean_line)
+    if context_terms is None:
+        context_terms = set(title_terms)
+
+    overlap_title = title_terms.intersection(terms)
+    overlap_context = context_terms.intersection(terms)
+    menu_hits = sum(1 for term in terms if term in UI_LINE_MENU_TERMS)
+    has_contact_noise = bool(
+        re.search(r"(?i)(고객센터|등록번호|발행인|편집인|개인정보|이용약관|사이트맵|copyright|all rights reserved)", clean_line)
+    )
+    has_share_noise = bool(
+        re.search(r"(?i)(공유하기|새로고침|메뉴 펼치기|메뉴 접기|상단으로 페이지 이동|기사듣기|글자크기)", clean_line)
+    )
+    is_short = len(clean_line) < 18
+
+    if has_contact_noise or has_share_noise:
+        return False, {"reason": "ui_noise", "terms": terms}
+    if menu_hits >= 1 and not overlap_title and not overlap_context:
+        return False, {"reason": "menu_terms", "terms": terms}
+    if overlap_title:
+        return True, {"reason": "title_overlap", "terms": terms}
+    if overlap_context:
+        return True, {"reason": "context_overlap", "terms": terms}
+    if not terms and is_short:
+        return False, {"reason": "short_noncontent", "terms": terms}
+    if len(terms) <= 1 and is_short:
+        return False, {"reason": "low_signal", "terms": terms}
+    if len(terms) >= 3 and len(clean_line) >= 28:
+        return True, {"reason": "content_shape", "terms": terms}
+    return False, {"reason": "low_relevance", "terms": terms}
+
+
+def filter_lines_by_title_relevance(title: str, lines):
+    title_terms, context_terms, line_terms = build_relevance_context(title, lines)
+    kept = []
+    for line, terms in line_terms:
+        keep, meta = classify_line_relevance(
+            title,
+            line,
+            context_terms=context_terms,
+            title_terms=title_terms,
+        )
+        if keep:
+            kept.append(sanitize(line, "body"))
+            for term in terms:
+                context_terms.add(term)
+        elif meta["reason"] == "low_relevance" and len(terms) >= 4 and len(line) >= 40:
+            kept.append(sanitize(line, "body"))
+    return kept
 
 
 def split_context_units(text: str):
@@ -440,15 +546,19 @@ def split_context_units(text: str):
 
 
 def extract_keywords(title: str, body_text: str, summary: str = "", limit: int = 12):
+    filtered_lines = filter_lines_by_title_relevance(title, split_context_units(body_text))
+    filtered_body = "\n".join(filtered_lines) if filtered_lines else body_text
+    filtered_summary_lines = filter_lines_by_title_relevance(title, split_context_units(summary))
+    filtered_summary = "\n".join(filtered_summary_lines) if filtered_summary_lines else summary
     title_tokens = [token for token in extract_tokens(title) if token]
     title_set = set(title_tokens)
     if not title_set:
-        title_set = set(extract_tokens(summary)[:6])
+        title_set = set(extract_tokens(filtered_summary)[:6])
 
-    body_counts = Counter(token for token in extract_tokens(body_text) if token)
-    summary_counts = Counter(token for token in extract_tokens(summary) if token)
+    body_counts = Counter(token for token in extract_tokens(filtered_body) if token)
+    summary_counts = Counter(token for token in extract_tokens(filtered_summary) if token)
     co_counts = Counter()
-    for unit in split_context_units(body_text or summary):
+    for unit in split_context_units(filtered_body or filtered_summary):
         unit_tokens = [token for token in extract_tokens(unit) if token]
         if not unit_tokens:
             continue
@@ -622,11 +732,13 @@ def main():
                         summary = bullet
                         body = bullet
 
-                keywords = row.get("keywords") or extract_keywords(
+                keywords = extract_keywords(
                     row.get("title", ""),
                     scraped_body or body or summary,
                     ai_summary or summary,
                 )
+                if not keywords:
+                    keywords = row.get("keywords") or []
 
                 rows.append(
                     {
