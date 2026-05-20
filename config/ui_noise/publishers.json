@@ -14,5 +14,116 @@
       "(?i)(경향신문 앱|스포츠경향|주간경향|레이디경향)",
       "(?i)(주요 기사|지금 많이 보는 기사)"
     ]
+  },
+  "inews24": {
+    "domains": ["inews24.com"],
+    "brand_terms": ["아이뉴스24", "아이뉴스TV"],
+    "menu_terms": [
+      "오늘의 증시",
+      "포토·영상",
+      "포토ㆍ영상",
+      "스페셜",
+      "뉴스톡톡",
+      "인기 댓글순",
+      "인기순",
+      "최신순",
+      "응원수",
+      "첫 번째 댓글을 작성해 보세요.",
+      "로딩중"
+    ],
+    "noise_patterns": [
+      "(?i)(아이뉴스TV|뉴스톡톡|인기 댓글순|첫 번째 댓글을 작성해 보세요)",
+      "(?i)(오늘의 증시|코스피|코스닥|포토.?영상|스페셜)"
+    ]
+  },
+  "zdnet": {
+    "domains": ["zdnet.co.kr"],
+    "brand_terms": ["ZDNET Korea", "지디넷코리아"],
+    "menu_terms": [
+      "홈&모바일",
+      "통신&방송",
+      "컨버전스",
+      "컴퓨팅",
+      "디지털경제",
+      "현장"
+    ],
+    "noise_patterns": [
+      "(?i)(ZDNET Korea|지디넷코리아)",
+      "(?i)(홈.?모바일|통신.?방송|디지털경제)"
+    ]
+  },
+  "chosunbiz": {
+    "domains": ["chosun.com", "chosunbiz.com"],
+    "brand_terms": ["조선비즈", "조선일보"],
+    "menu_terms": [
+      "market",
+      "사회",
+      "정치",
+      "국제",
+      "헬스",
+      "문화"
+    ],
+    "noise_patterns": [
+      "(?i)(조선비즈|조선일보)",
+      "(?i)(market|사회|정치|국제|헬스|문화)"
+    ]
+  },
+  "hani": {
+    "domains": ["hani.co.kr"],
+    "brand_terms": ["한겨레"],
+    "menu_terms": [
+      "사설",
+      "칼럼",
+      "기후",
+      "기후위기",
+      "한겨레s",
+      "esc"
+    ],
+    "noise_patterns": [
+      "(?i)(한겨레S|esc|한겨레)",
+      "(?i)(사설|칼럼|기후위기)"
+    ]
+  },
+  "mk": {
+    "domains": ["mk.co.kr"],
+    "brand_terms": ["매일경제", "매경"],
+    "menu_terms": [
+      "증권",
+      "부동산",
+      "사회",
+      "world",
+      "economy"
+    ],
+    "noise_patterns": [
+      "(?i)(매일경제|매경)",
+      "(?i)(증권|부동산|world|economy)"
+    ]
+  },
+  "hankyung": {
+    "domains": ["hankyung.com"],
+    "brand_terms": ["한국경제"],
+    "menu_terms": [
+      "마켓",
+      "부동산",
+      "모바일한경",
+      "회원전용"
+    ],
+    "noise_patterns": [
+      "(?i)(한국경제|모바일한경|회원전용)",
+      "(?i)(마켓|부동산)"
+    ]
+  },
+  "donga": {
+    "domains": ["donga.com"],
+    "brand_terms": ["동아일보"],
+    "menu_terms": [
+      "동아닷컴",
+      "사람속으로",
+      "헬스동아",
+      "골든걸"
+    ],
+    "noise_patterns": [
+      "(?i)(동아일보|동아닷컴|헬스동아|골든걸)"
+    ]
   }
 }

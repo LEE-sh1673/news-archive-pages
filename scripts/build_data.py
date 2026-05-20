@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
 DEFAULT_OUT = ROOT / "docs" / "data" / "news_archive.json"
 DEFAULT_TRENDS_OUT = ROOT / "docs" / "data" / "trends.json"
+DEFAULT_UI_NOISE_REPORT_OUT = ROOT / "docs" / "data" / "ui_noise_report.json"
 UI_NOISE_COMMON_PATH = ROOT / "config" / "ui_noise" / "common.json"
 UI_NOISE_PUBLISHERS_PATH = ROOT / "config" / "ui_noise" / "publishers.json"
 
@@ -670,11 +671,13 @@ def classify_line_relevance(title: str, line: str, context_terms=None, title_ter
     return False, {"reason": "low_relevance", "terms": terms}
 
 
-def filter_lines_by_title_relevance(title: str, lines, url: str = ""):
+def filter_lines_by_title_relevance(title: str, lines, url: str = "", return_report: bool = False):
     publisher = detect_publisher(url, lines)
     title_terms, context_terms, line_terms = build_relevance_context(title, lines)
     noise_model, _ = train_line_noise_classifier(title, lines, publisher)
     kept = []
+    removed = []
+    suspicious_kept = []
     for idx, (line, terms) in enumerate(line_terms):
         keep, meta = classify_line_relevance(
             title,
@@ -690,9 +693,83 @@ def filter_lines_by_title_relevance(title: str, lines, url: str = ""):
             kept.append(sanitize(line, "body"))
             for term in terms:
                 context_terms.add(term)
+            if meta["reason"] in {"content_shape", "low_relevance"}:
+                suspicious_kept.append(
+                    {
+                        "line": sanitize(line, "body"),
+                        "reason": meta["reason"],
+                        "terms": sorted(list(terms))[:8],
+                    }
+                )
         elif meta["reason"] == "low_relevance" and len(terms) >= 4 and len(line) >= 40:
             kept.append(sanitize(line, "body"))
+            suspicious_kept.append(
+                {
+                    "line": sanitize(line, "body"),
+                    "reason": "fallback_keep",
+                    "terms": sorted(list(terms))[:8],
+                }
+            )
+        else:
+            removed.append(
+                {
+                    "line": sanitize(line, "body"),
+                    "reason": meta["reason"],
+                    "terms": sorted(list(terms))[:8],
+                    "score": meta.get("score"),
+                }
+            )
+    if return_report:
+        return kept, {
+            "publisher": publisher,
+            "removed": removed,
+            "suspicious_kept": suspicious_kept,
+        }
     return kept
+
+
+def build_ui_noise_report(rows):
+    report = {"generated_from_rows": len(rows), "publishers": {}}
+    for row in rows[:400]:
+        source_text = row.get("scraped_body") or row.get("body") or row.get("summary") or ""
+        lines = split_context_units(source_text)
+        if not lines:
+            continue
+        _, line_report = filter_lines_by_title_relevance(
+            row.get("title", ""),
+            lines,
+            url=row.get("url", ""),
+            return_report=True,
+        )
+        publisher = line_report["publisher"]
+        bucket = report["publishers"].setdefault(
+            publisher,
+            {
+                "article_count": 0,
+                "removed_counter": Counter(),
+                "suspicious_counter": Counter(),
+            },
+        )
+        bucket["article_count"] += 1
+        for item in line_report["removed"]:
+            if item["line"]:
+                bucket["removed_counter"][item["line"]] += 1
+        for item in line_report["suspicious_kept"]:
+            if item["line"]:
+                bucket["suspicious_counter"][item["line"]] += 1
+
+    for publisher, bucket in report["publishers"].items():
+        removed_counter = bucket.pop("removed_counter")
+        suspicious_counter = bucket.pop("suspicious_counter")
+        bucket["removed_examples"] = [
+            {"line": line, "count": count}
+            for line, count in removed_counter.most_common(15)
+        ]
+        bucket["suspicious_kept_examples"] = [
+            {"line": line, "count": count}
+            for line, count in suspicious_counter.most_common(15)
+        ]
+    return report
 
 
 def split_context_units(text: str):
@@ -862,6 +939,9 @@ def main():
     src = Path(os.environ.get("SOURCE_JSONL", str(DEFAULT_SRC))).expanduser()
     out = Path(os.environ.get("OUTPUT_JSON", str(DEFAULT_OUT))).expanduser()
     trends_out = Path(os.environ.get("OUTPUT_TRENDS_JSON", str(DEFAULT_TRENDS_OUT))).expanduser()
+    ui_noise_report_out = Path(
+        os.environ.get("OUTPUT_UI_NOISE_REPORT_JSON", str(DEFAULT_UI_NOISE_REPORT_OUT))
+    ).expanduser()
 
     rows = []
     if src.exists():
@@ -927,16 +1007,21 @@ def main():
 
     rows.sort(key=choose_timestamp, reverse=True)
     trends = build_trends(rows)
+    ui_noise_report = build_ui_noise_report(rows)
 
     os.makedirs(out.parent, exist_ok=True)
     os.makedirs(trends_out.parent, exist_ok=True)
+    os.makedirs(ui_noise_report_out.parent, exist_ok=True)
     with out.open("w", encoding="utf-8") as file:
         json.dump(rows, file, ensure_ascii=False, separators=(",", ":"))
     with trends_out.open("w", encoding="utf-8") as file:
         json.dump(trends, file, ensure_ascii=False, separators=(",", ":"))
+    with ui_noise_report_out.open("w", encoding="utf-8") as file:
+        json.dump(ui_noise_report, file, ensure_ascii=False, separators=(",", ":"))
 
     print(f"OK: wrote {len(rows)} rows -> {out}")
     print(f"OK: wrote trends -> {trends_out}")
+    print(f"OK: wrote ui noise report -> {ui_noise_report_out}")
     return 0
 
 
