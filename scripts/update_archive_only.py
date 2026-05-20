@@ -165,13 +165,13 @@ def _codex_filter_unrelated_lines(title: str, text: str) -> str:
     return run_codex_cli_summary(prompt)
 
 
-def filter_scraped_body_text(title: str, body_text: str) -> str:
+def filter_scraped_body_text(title: str, body_text: str, url: str = "") -> str:
     source = normalize_inner_text(body_text)
     if not source:
         return ""
     lines = [ln for ln in source.splitlines() if ln.strip()]
     lines = _simple_ui_noise_filter(lines)
-    lines = filter_lines_by_title_relevance(title, lines) or lines
+    lines = filter_lines_by_title_relevance(title, lines, url=url) or lines
     baseline = "\n".join(lines)[:MAX_SOURCE_CHARS]
     if not baseline:
         return ""
@@ -180,7 +180,7 @@ def filter_scraped_body_text(title: str, body_text: str) -> str:
     codex_filtered = _codex_filter_unrelated_lines(title, baseline)
     if codex_filtered:
         final_lines = _simple_ui_noise_filter(codex_filtered.splitlines())
-        final_lines = filter_lines_by_title_relevance(title, final_lines) or final_lines
+        final_lines = filter_lines_by_title_relevance(title, final_lines, url=url) or final_lines
         if final_lines:
             return "\n".join(final_lines)[:MAX_SOURCE_CHARS]
     return baseline
@@ -1170,13 +1170,13 @@ def fetch_article_body(url: str, title: str = "") -> str:
         return ""
     try:
         html_doc = http_text(url, timeout=60)
-        body = filter_scraped_body_text(title, extract_article_body_from_html(html_doc))
+        body = filter_scraped_body_text(title, extract_article_body_from_html(html_doc), url=url)
         if body and len(body.strip()) >= 120:
             return body
 
         # Fallback for JS-rendered pages where urllib HTML misses article body.
         rendered_html = http_text_playwright(url, timeout_ms=PLAYWRIGHT_TIMEOUT_MS)
-        rendered_body = filter_scraped_body_text(title, extract_article_body_from_html(rendered_html))
+        rendered_body = filter_scraped_body_text(title, extract_article_body_from_html(rendered_html), url=url)
         if rendered_body:
             return rendered_body
 
@@ -1445,7 +1445,12 @@ def main() -> int:
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
             ai_summary = build_ai_summary(title, desc, body_raw)
-            keywords = extract_keywords(title, body_raw or formatted_body or desc, ai_summary or formatted_body or desc)
+            keywords = extract_keywords(
+                title,
+                body_raw or formatted_body or desc,
+                ai_summary or formatted_body or desc,
+                url=url,
+            )
             # Thumbnail generation is temporarily disabled.
             # thumb = generate_thumbnail(rid, title, body_raw)
             thumb = ""

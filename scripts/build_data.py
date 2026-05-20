@@ -3,19 +3,32 @@ import html
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 try:
     from kiwipiepy import Kiwi
 except Exception:
     Kiwi = None
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+except Exception:
+    TfidfVectorizer = None
+    LogisticRegression = None
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
 DEFAULT_OUT = ROOT / "docs" / "data" / "news_archive.json"
 DEFAULT_TRENDS_OUT = ROOT / "docs" / "data" / "trends.json"
+UI_NOISE_COMMON_PATH = ROOT / "config" / "ui_noise" / "common.json"
+UI_NOISE_PUBLISHERS_PATH = ROOT / "config" / "ui_noise" / "publishers.json"
 
 MOJIBAKE_MARKERS = ("Ã", "Â", "â€™", "â€œ", "â€", "ï¿½", "\ufffd")
 CATEGORIES = ("IT", "경제", "취업")
@@ -26,62 +39,6 @@ PERIODS = {
 }
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9.+-]*|[0-9]{2,}|[가-힣]{2,}")
 ALLOWED_KIWI_TAGS = {"NNG", "NNP", "NP", "NR", "SL", "SH"}
-UI_LINE_MENU_TERMS = {
-    "경향신문",
-    "오피니언",
-    "라이프",
-    "공유하기",
-    "뉴스플리",
-    "글자크기",
-    "기사듣기",
-    "메뉴",
-    "기자메모",
-    "새로고침",
-    "유산소",
-    "주요",
-    "지금",
-    "스포츠",
-    "과학",
-    "환경",
-    "뉴스레터",
-    "사진",
-    "인터랙티브",
-    "기획",
-    "연재",
-    "기사제보",
-    "디지털",
-    "지면보기",
-    "초판보기",
-    "보도자료",
-    "회사소개",
-    "온라인광고",
-    "사업제휴",
-    "저작권",
-    "콘텐츠",
-    "고충처리",
-    "help",
-    "family",
-    "site",
-    "스포츠경향",
-    "주간경향",
-    "레이디경향",
-    "이용약관",
-    "개인정보처리방침",
-    "사이트맵",
-    "고객센터",
-    "등록번호",
-    "등록일자",
-    "발행인",
-    "편집인",
-    "청소년보호책임자",
-    "facebook",
-    "youtube",
-    "instagram",
-    "google",
-    "rss",
-    "상단",
-    "페이지",
-}
 KOREAN_SUFFIXES = (
     "으로부터",
     "에서부터",
@@ -284,6 +241,55 @@ FALLBACK_NON_NOUN_SUFFIXES = (
 _KIWI = None
 
 
+@lru_cache(maxsize=1)
+def load_ui_noise_config():
+    common = {"menu_terms": [], "noise_patterns": []}
+    publishers = {}
+    if UI_NOISE_COMMON_PATH.exists():
+        common = json.loads(UI_NOISE_COMMON_PATH.read_text(encoding="utf-8"))
+    if UI_NOISE_PUBLISHERS_PATH.exists():
+        publishers = json.loads(UI_NOISE_PUBLISHERS_PATH.read_text(encoding="utf-8"))
+    compiled_common = [re.compile(pattern) for pattern in common.get("noise_patterns", [])]
+    compiled_publishers = {}
+    for key, item in publishers.items():
+        compiled_publishers[key] = {
+            "domains": item.get("domains", []),
+            "brand_terms": item.get("brand_terms", []),
+            "menu_terms": set(item.get("menu_terms", [])),
+            "noise_patterns": [re.compile(pattern) for pattern in item.get("noise_patterns", [])],
+        }
+    return {
+        "common_menu_terms": set(common.get("menu_terms", [])),
+        "common_patterns": compiled_common,
+        "publishers": compiled_publishers,
+    }
+
+
+def detect_publisher(url: str = "", lines=None):
+    config = load_ui_noise_config()
+    host = (urlparse(url).hostname or "").lower()
+    lines = lines or []
+    joined = "\n".join(lines)
+    for publisher, item in config["publishers"].items():
+        if any(domain in host for domain in item["domains"]):
+            return publisher
+        if any(term in joined for term in item["brand_terms"]):
+            return publisher
+    return "generic"
+
+
+def get_publisher_noise_terms(publisher: str):
+    config = load_ui_noise_config()
+    common_terms = set(config["common_menu_terms"])
+    common_patterns = list(config["common_patterns"])
+    publisher_conf = config["publishers"].get(publisher, {})
+    publisher_terms = set(publisher_conf.get("menu_terms", set()))
+    publisher_patterns = list(publisher_conf.get("noise_patterns", []))
+    for term in publisher_conf.get("brand_terms", []):
+        publisher_terms.add(term)
+    return common_terms.union(publisher_terms), common_patterns + publisher_patterns
+
+
 def get_kiwi():
     global _KIWI
     if Kiwi is None:
@@ -480,7 +486,140 @@ def build_relevance_context(title: str, lines):
     return title_terms, context_terms, line_terms
 
 
-def classify_line_relevance(title: str, line: str, context_terms=None, title_terms=None):
+def build_line_feature_text(line: str, publisher: str, title_terms, context_terms, terms, line_idx: int, total_lines: int):
+    overlap_title = sorted(title_terms.intersection(terms))
+    overlap_context = sorted(context_terms.intersection(terms))
+    position = "top" if line_idx < 8 else "bottom" if total_lines and line_idx >= max(total_lines - 8, 0) else "mid"
+    return " ".join(
+        [
+            f"publisher={publisher}",
+            f"position={position}",
+            f"title_overlap={1 if overlap_title else 0}",
+            f"context_overlap={1 if overlap_context else 0}",
+            f"token_count={len(terms)}",
+            "terms=" + " ".join(sorted(terms)),
+            "title_terms=" + " ".join(overlap_title),
+            "context_terms=" + " ".join(overlap_context),
+            "raw=" + sanitize(line, "body").lower(),
+        ]
+    ).strip()
+
+
+def run_codex_cli_text(prompt: str) -> str:
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return ""
+    with tempfile.NamedTemporaryFile(prefix="codex_ui_noise_", suffix=".txt", delete=False) as tmp:
+        out_path = tmp.name
+    cmd = [
+        codex_bin,
+        "exec",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "read-only",
+        "-o",
+        out_path,
+        "-",
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=90,
+            check=True,
+        )
+        return Path(out_path).read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    finally:
+        try:
+            os.remove(out_path)
+        except Exception:
+            pass
+
+
+def llm_label_noise_lines(title: str, publisher: str, candidate_lines):
+    if os.environ.get("ENABLE_LLM_NOISE_ASSIST", "").strip().lower() not in {"1", "true", "yes"}:
+        return {}
+    if not candidate_lines:
+        return {}
+    prompt_lines = []
+    for idx, line in enumerate(candidate_lines, start=1):
+        prompt_lines.append(f"{idx}. {line}")
+    prompt = (
+        "아래 기사 라인들을 content 또는 noise 로 분류해줘.\n"
+        "- noise: 메뉴, 공유, 푸터, 회사정보, 약관, 광고, 다른 기사 링크, 고객센터, SNS 등\n"
+        "- content: 기사 제목과 직접 관련된 본문 문장\n"
+        "- 출력은 `번호: label` 형식만 사용\n\n"
+        f"언론사: {publisher}\n"
+        f"기사 제목: {title}\n"
+        "라인 목록:\n"
+        + "\n".join(prompt_lines)
+    )
+    raw = run_codex_cli_text(prompt)
+    labels = {}
+    for line in raw.splitlines():
+        match = re.match(r"^\s*(\d+)\s*:\s*(content|noise)\s*$", line.strip(), re.IGNORECASE)
+        if not match:
+            continue
+        idx = int(match.group(1)) - 1
+        if 0 <= idx < len(candidate_lines):
+            labels[candidate_lines[idx]] = match.group(2).lower()
+    return labels
+
+
+def train_line_noise_classifier(title: str, lines, publisher: str = "generic"):
+    if not lines or TfidfVectorizer is None or LogisticRegression is None:
+        return None, {}
+
+    title_terms, context_terms, line_terms = build_relevance_context(title, lines)
+    menu_terms, noise_patterns = get_publisher_noise_terms(publisher)
+    train_texts = []
+    labels = []
+    undecided = []
+    debug = {}
+
+    for idx, (line, terms) in enumerate(line_terms):
+        feature_text = build_line_feature_text(line, publisher, title_terms, context_terms, terms, idx, len(line_terms))
+        lower_line = sanitize(line, "body").lower()
+        explicit_noise = any(term.lower() in lower_line for term in menu_terms) or any(
+            pattern.search(sanitize(line, "body")) for pattern in noise_patterns
+        )
+        explicit_content = bool(title_terms.intersection(terms)) or (
+            bool(context_terms.intersection(terms)) and len(terms) >= 2 and len(line) >= 24
+        )
+        if explicit_noise and not explicit_content:
+            train_texts.append(feature_text)
+            labels.append(1)
+            debug[line] = "seed_noise"
+            continue
+        if explicit_content and not explicit_noise:
+            train_texts.append(feature_text)
+            labels.append(0)
+            debug[line] = "seed_content"
+            continue
+        undecided.append((line, feature_text))
+
+    llm_labels = llm_label_noise_lines(title, publisher, [line for line, _ in undecided[:8]])
+    for line, feature_text in undecided:
+        if line in llm_labels:
+            train_texts.append(feature_text)
+            labels.append(1 if llm_labels[line] == "noise" else 0)
+            debug[line] = f"llm_{llm_labels[line]}"
+
+    if len(set(labels)) < 2 or len(train_texts) < 6:
+        return None, debug
+
+    vectorizer = TfidfVectorizer(ngram_range=(1, 2), min_df=1)
+    x = vectorizer.fit_transform(train_texts)
+    classifier = LogisticRegression(max_iter=300, class_weight="balanced")
+    classifier.fit(x, labels)
+    return (vectorizer, classifier, title_terms, context_terms), debug
+
+
+def classify_line_relevance(title: str, line: str, context_terms=None, title_terms=None, publisher="generic", noise_model=None, line_idx=0, total_lines=0):
     clean_line = sanitize(line, "body")
     if not clean_line:
         return False, {"reason": "empty", "terms": set()}
@@ -490,19 +629,15 @@ def classify_line_relevance(title: str, line: str, context_terms=None, title_ter
     terms = extract_token_set(clean_line)
     if context_terms is None:
         context_terms = set(title_terms)
+    menu_terms, noise_patterns = get_publisher_noise_terms(publisher)
 
     overlap_title = title_terms.intersection(terms)
     overlap_context = context_terms.intersection(terms)
-    menu_hits = sum(1 for term in terms if term in UI_LINE_MENU_TERMS)
-    has_contact_noise = bool(
-        re.search(r"(?i)(고객센터|등록번호|발행인|편집인|개인정보|이용약관|사이트맵|copyright|all rights reserved)", clean_line)
-    )
-    has_share_noise = bool(
-        re.search(r"(?i)(공유하기|새로고침|메뉴 펼치기|메뉴 접기|상단으로 페이지 이동|기사듣기|글자크기)", clean_line)
-    )
+    menu_hits = sum(1 for term in terms if term in menu_terms)
+    pattern_noise = any(pattern.search(clean_line) for pattern in noise_patterns)
     is_short = len(clean_line) < 18
 
-    if has_contact_noise or has_share_noise:
+    if pattern_noise:
         return False, {"reason": "ui_noise", "terms": terms}
     if menu_hits >= 1 and not overlap_title and not overlap_context:
         return False, {"reason": "menu_terms", "terms": terms}
@@ -514,20 +649,42 @@ def classify_line_relevance(title: str, line: str, context_terms=None, title_ter
         return False, {"reason": "short_noncontent", "terms": terms}
     if len(terms) <= 1 and is_short:
         return False, {"reason": "low_signal", "terms": terms}
+    if noise_model is not None:
+        vectorizer, classifier, model_title_terms, model_context_terms = noise_model
+        feature_text = build_line_feature_text(
+            line,
+            publisher,
+            model_title_terms,
+            model_context_terms,
+            terms,
+            line_idx,
+            total_lines,
+        )
+        proba = classifier.predict_proba(vectorizer.transform([feature_text]))[0][1]
+        if proba >= 0.70:
+            return False, {"reason": "model_noise", "terms": terms, "score": round(float(proba), 4)}
+        if proba <= 0.35 and len(terms) >= 2:
+            return True, {"reason": "model_content", "terms": terms, "score": round(float(proba), 4)}
     if len(terms) >= 3 and len(clean_line) >= 28:
         return True, {"reason": "content_shape", "terms": terms}
     return False, {"reason": "low_relevance", "terms": terms}
 
 
-def filter_lines_by_title_relevance(title: str, lines):
+def filter_lines_by_title_relevance(title: str, lines, url: str = ""):
+    publisher = detect_publisher(url, lines)
     title_terms, context_terms, line_terms = build_relevance_context(title, lines)
+    noise_model, _ = train_line_noise_classifier(title, lines, publisher)
     kept = []
-    for line, terms in line_terms:
+    for idx, (line, terms) in enumerate(line_terms):
         keep, meta = classify_line_relevance(
             title,
             line,
             context_terms=context_terms,
             title_terms=title_terms,
+            publisher=publisher,
+            noise_model=noise_model,
+            line_idx=idx,
+            total_lines=len(line_terms),
         )
         if keep:
             kept.append(sanitize(line, "body"))
@@ -545,10 +702,10 @@ def split_context_units(text: str):
     return [unit.strip() for unit in re.split(r"[\n\r]+|(?<=[.!?。])\s+", source) if unit.strip()]
 
 
-def extract_keywords(title: str, body_text: str, summary: str = "", limit: int = 12):
-    filtered_lines = filter_lines_by_title_relevance(title, split_context_units(body_text))
+def extract_keywords(title: str, body_text: str, summary: str = "", limit: int = 12, url: str = ""):
+    filtered_lines = filter_lines_by_title_relevance(title, split_context_units(body_text), url=url)
     filtered_body = "\n".join(filtered_lines) if filtered_lines else body_text
-    filtered_summary_lines = filter_lines_by_title_relevance(title, split_context_units(summary))
+    filtered_summary_lines = filter_lines_by_title_relevance(title, split_context_units(summary), url=url)
     filtered_summary = "\n".join(filtered_summary_lines) if filtered_summary_lines else summary
     title_tokens = [token for token in extract_tokens(title) if token]
     title_set = set(title_tokens)
@@ -736,6 +893,7 @@ def main():
                     row.get("title", ""),
                     scraped_body or body or summary,
                     ai_summary or summary,
+                    url=row.get("url", ""),
                 )
                 if not keywords:
                     keywords = row.get("keywords") or []
