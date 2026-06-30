@@ -37,6 +37,10 @@ OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Seoul")
 MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
+ARCHIVE_SPLIT_MAX_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("ARCHIVE_SPLIT_MAX_BYTES", str(47 * 1024 * 1024))),
+)
 ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "40")))
 NEWS_PAGE_SIZE = max(20, min(100, int(os.environ.get("NEWS_PAGE_SIZE", "100"))))
 MAX_NEWS_PAGES = max(1, int(os.environ.get("MAX_NEWS_PAGES", "3")))
@@ -1351,35 +1355,143 @@ def generate_thumbnail(article_id: str, title: str, body_text: str) -> str:
 
 def load_existing_ids(path: str):
     ids = set()
-    if not os.path.exists(path):
-        return ids
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:
-                continue
-            rid = str(row.get("id", "")).strip()
-            if rid:
-                ids.add(rid)
+    for archive_path in iter_archive_part_paths(path):
+        with open(archive_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rid = str(row.get("id", "")).strip()
+                if rid:
+                    ids.add(rid)
     return ids
+
+
+def archive_part_path(path: str, index: int) -> str:
+    base = Path(path)
+    if index <= 1:
+        return str(base)
+    return str(base.with_name(f"{base.stem}.{index:03d}{base.suffix}"))
+
+
+def iter_archive_part_paths(path: str):
+    base = Path(path)
+    candidates = []
+    if base.exists():
+        candidates.append(base)
+    pattern = f"{base.stem}.*{base.suffix}"
+    for candidate in sorted(base.parent.glob(pattern)):
+        if candidate == base:
+            continue
+        if re.fullmatch(rf"{re.escape(base.stem)}\.\d{{3}}{re.escape(base.suffix)}", candidate.name):
+            candidates.append(candidate)
+    return [str(candidate) for candidate in candidates]
+
+
+def split_archive_lines(path: str):
+    seen = set()
+    lines = []
+    for archive_path in iter_archive_part_paths(path):
+        with open(archive_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rid = str(row.get("id", "")).strip()
+                if rid and rid in seen:
+                    continue
+                if rid:
+                    seen.add(rid)
+                lines.append(json.dumps(row, ensure_ascii=False) + "\n")
+    return lines
+
+
+def rewrite_archive_parts(path: str, lines):
+    base = Path(path)
+    os.makedirs(base.parent, exist_ok=True)
+    tmp_paths = []
+    current_index = 1
+    current_size = 0
+    current_path = Path(archive_part_path(path, current_index))
+    current_file = open(current_path.with_suffix(current_path.suffix + ".tmp"), "w", encoding="utf-8")
+    tmp_paths.append((current_path, Path(current_file.name)))
+
+    try:
+        for line in lines:
+            encoded_size = len(line.encode("utf-8"))
+            if current_size > 0 and current_size + encoded_size > ARCHIVE_SPLIT_MAX_BYTES:
+                current_file.close()
+                current_index += 1
+                current_size = 0
+                current_path = Path(archive_part_path(path, current_index))
+                current_file = open(current_path.with_suffix(current_path.suffix + ".tmp"), "w", encoding="utf-8")
+                tmp_paths.append((current_path, Path(current_file.name)))
+            current_file.write(line)
+            current_size += encoded_size
+        current_file.close()
+
+        expected_paths = {str(target) for target, _ in tmp_paths}
+        for old_path in iter_archive_part_paths(path):
+            if old_path not in expected_paths:
+                os.remove(old_path)
+        for target, tmp in tmp_paths:
+            os.replace(tmp, target)
+    finally:
+        try:
+            current_file.close()
+        except Exception:
+            pass
+        for _, tmp in tmp_paths:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except Exception:
+                    pass
+
+
+def rebalance_archive_parts(path: str):
+    lines = split_archive_lines(path)
+    rewrite_archive_parts(path, lines)
+    return len(lines), iter_archive_part_paths(path)
 
 
 def append_entries(path: str, entries):
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    rebalance_archive_parts(path)
     existing = load_existing_ids(path)
     added = 0
-    with open(path, "a", encoding="utf-8") as f:
+    part_paths = iter_archive_part_paths(path)
+    current_path = part_paths[-1] if part_paths else path
+    current_size = os.path.getsize(current_path) if os.path.exists(current_path) else 0
+    current_index = len(part_paths) if part_paths else 1
+    f = open(current_path, "a", encoding="utf-8")
+    try:
         for row in entries:
             rid = row.get("id", "")
             if not rid or rid in existing:
                 continue
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            line = json.dumps(row, ensure_ascii=False) + "\n"
+            encoded_size = len(line.encode("utf-8"))
+            if current_size > 0 and current_size + encoded_size > ARCHIVE_SPLIT_MAX_BYTES:
+                f.close()
+                current_index += 1
+                current_path = archive_part_path(path, current_index)
+                f = open(current_path, "a", encoding="utf-8")
+                current_size = 0
+            f.write(line)
+            current_size += encoded_size
             existing.add(rid)
             added += 1
+    finally:
+        f.close()
     return added
 
 
@@ -1402,6 +1514,11 @@ def unique_articles(articles, limit: int):
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--rebalance-only":
+        count, paths = rebalance_archive_parts(ARCHIVE_PATH)
+        print(f"OK: rebalanced archive rows={count}, parts={','.join(paths)}")
+        return 0
+
     if not NEWSAPI_KEY:
         return fail("NEWSAPI_KEY is required")
 

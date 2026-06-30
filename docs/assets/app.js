@@ -732,19 +732,41 @@ function routeFromLocation() {
 }
 
 async function loadData() {
-  const [archiveRes, trendsRes] = await Promise.all([
-    fetch("./data/news_archive.json", { cache: "no-store" }),
+  const [archiveRows, trendsRes] = await Promise.all([
+    loadArchiveRows(),
     fetch("./data/trends.json", { cache: "no-store" }),
   ]);
-  if (!archiveRes.ok) throw new Error(`Failed to load data: ${archiveRes.status}`);
   if (!trendsRes.ok) throw new Error(`Failed to load trends: ${trendsRes.status}`);
 
-  allPosts = sortPosts(await archiveRes.json(), "latest");
+  allPosts = sortPosts(archiveRows, "latest");
   trendsData = await trendsRes.json();
   selectedCategory = trendsData.default_category || selectedCategory;
   selectedPeriod = trendsData.default_period || selectedPeriod;
   filteredPosts = sortPosts([...allPosts], "latest");
   routeFromLocation();
+}
+
+async function loadArchiveRows() {
+  const manifestRes = await fetch("./data/news_archive.manifest.json", { cache: "no-store" });
+  if (manifestRes.ok) {
+    const manifest = await manifestRes.json();
+    const partNames = Array.isArray(manifest.parts) ? manifest.parts : [];
+    const partResponses = await Promise.all(
+      partNames.map((partName) => fetch(`./data/${partName}`, { cache: "no-store" }))
+    );
+    for (const response of partResponses) {
+      if (!response.ok) throw new Error(`Failed to load archive part: ${response.status}`);
+    }
+    const partRows = await Promise.all(partResponses.map((response) => response.json()));
+    return partRows.flat();
+  }
+  if (manifestRes.status !== 404) {
+    throw new Error(`Failed to load archive manifest: ${manifestRes.status}`);
+  }
+
+  const archiveRes = await fetch("./data/news_archive.json", { cache: "no-store" });
+  if (!archiveRes.ok) throw new Error(`Failed to load data: ${archiveRes.status}`);
+  return archiveRes.json();
 }
 
 function applyTheme(mode) {

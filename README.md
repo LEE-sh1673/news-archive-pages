@@ -26,8 +26,8 @@ python3 -m http.server 8080
 - 주기: `0 */3 * * *` (UTC 기준 3시간 간격)
 - 수행 순서:
   1) NewsAPI 수집(`scripts/update_archive_only.py`)
-  2) `data/news_archive.jsonl` 누적 업데이트
-  3) `docs/data/news_archive.json` 생성
+  2) `data/news_archive.jsonl` 및 `data/news_archive.001.jsonl` 형태의 분할 아카이브 누적 업데이트
+  3) `docs/data/news_archive.manifest.json` + 분할 JSON 생성
   4) 변경분 commit/push
   5) GitHub Pages 배포
 

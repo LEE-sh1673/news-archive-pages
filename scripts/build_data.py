@@ -26,8 +26,17 @@ except Exception:
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SRC = ROOT / "data" / "news_archive.jsonl"
 DEFAULT_OUT = ROOT / "docs" / "data" / "news_archive.json"
+DEFAULT_OUT_MANIFEST = ROOT / "docs" / "data" / "news_archive.manifest.json"
 DEFAULT_TRENDS_OUT = ROOT / "docs" / "data" / "trends.json"
 DEFAULT_UI_NOISE_REPORT_OUT = ROOT / "docs" / "data" / "ui_noise_report.json"
+ARCHIVE_SPLIT_MAX_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("ARCHIVE_SPLIT_MAX_BYTES", str(47 * 1024 * 1024))),
+)
+PUBLIC_JSON_SPLIT_MAX_BYTES = max(
+    1024 * 1024,
+    int(os.environ.get("PUBLIC_JSON_SPLIT_MAX_BYTES", str(ARCHIVE_SPLIT_MAX_BYTES))),
+)
 UI_NOISE_COMMON_PATH = ROOT / "config" / "ui_noise" / "common.json"
 UI_NOISE_PUBLISHERS_PATH = ROOT / "config" / "ui_noise" / "publishers.json"
 
@@ -935,17 +944,24 @@ def build_trends(rows):
     }
 
 
-def main():
-    src = Path(os.environ.get("SOURCE_JSONL", str(DEFAULT_SRC))).expanduser()
-    out = Path(os.environ.get("OUTPUT_JSON", str(DEFAULT_OUT))).expanduser()
-    trends_out = Path(os.environ.get("OUTPUT_TRENDS_JSON", str(DEFAULT_TRENDS_OUT))).expanduser()
-    ui_noise_report_out = Path(
-        os.environ.get("OUTPUT_UI_NOISE_REPORT_JSON", str(DEFAULT_UI_NOISE_REPORT_OUT))
-    ).expanduser()
-
-    rows = []
+def iter_archive_part_paths(src: Path):
+    candidates = []
     if src.exists():
-        with src.open("r", encoding="utf-8") as file:
+        candidates.append(src)
+    pattern = f"{src.stem}.*{src.suffix}"
+    for candidate in sorted(src.parent.glob(pattern)):
+        if candidate == src:
+            continue
+        if re.fullmatch(rf"{re.escape(src.stem)}\.\d{{3}}{re.escape(src.suffix)}", candidate.name):
+            candidates.append(candidate)
+    return candidates
+
+
+def load_archive_rows(src: Path):
+    rows = []
+    seen_ids = set()
+    for part_path in iter_archive_part_paths(src):
+        with part_path.open("r", encoding="utf-8") as file:
             for line in file:
                 line = line.strip()
                 if not line:
@@ -954,6 +970,12 @@ def main():
                     row = json.loads(line)
                 except Exception:
                     continue
+
+                row_id = sanitize(row.get("id"), "id")
+                if row_id and row_id in seen_ids:
+                    continue
+                if row_id:
+                    seen_ids.add(row_id)
 
                 summary = sanitize(row.get("summary"), "summary")
                 body = sanitize(row.get("body"), "body")
@@ -980,7 +1002,7 @@ def main():
 
                 rows.append(
                     {
-                        "id": sanitize(row.get("id"), "id"),
+                        "id": row_id,
                         "title": sanitize(row.get("title"), "title"),
                         "summary": summary,
                         "body": body,
@@ -999,6 +1021,75 @@ def main():
                         "keywords": [sanitize(keyword) for keyword in keywords if sanitize(keyword)],
                     }
                 )
+    return rows
+
+
+def split_rows_for_json_parts(rows, max_bytes: int):
+    parts = []
+    current_rows = []
+    current_size = 2
+    for row in rows:
+        row_json = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+        row_size = len(row_json.encode("utf-8"))
+        separator_size = 1 if current_rows else 0
+        if current_rows and current_size + separator_size + row_size > max_bytes:
+            parts.append(current_rows)
+            current_rows = [row]
+            current_size = 2 + row_size
+            continue
+        current_rows.append(row)
+        current_size += separator_size + row_size
+    if current_rows or not parts:
+        parts.append(current_rows)
+    return parts
+
+
+def write_json_parts(rows, out: Path, manifest_path: Path):
+    os.makedirs(out.parent, exist_ok=True)
+    parts = split_rows_for_json_parts(rows, PUBLIC_JSON_SPLIT_MAX_BYTES)
+    part_names = []
+    active_part_paths = set()
+
+    for index, chunk in enumerate(parts, start=1):
+        part_name = f"{out.stem}.{index:03d}{out.suffix}"
+        part_path = out.with_name(part_name)
+        with part_path.open("w", encoding="utf-8") as file:
+            json.dump(chunk, file, ensure_ascii=False, separators=(",", ":"))
+        part_names.append(part_name)
+        active_part_paths.add(part_path.name)
+
+    for candidate in out.parent.glob(f"{out.stem}.*{out.suffix}"):
+        if candidate.name not in active_part_paths and re.fullmatch(
+            rf"{re.escape(out.stem)}\.\d{{3}}{re.escape(out.suffix)}",
+            candidate.name,
+        ):
+            candidate.unlink()
+
+    if out.exists():
+        out.unlink()
+
+    manifest = {
+        "version": 1,
+        "base_name": out.name,
+        "parts": part_names,
+        "total_rows": len(rows),
+    }
+    with manifest_path.open("w", encoding="utf-8") as file:
+        json.dump(manifest, file, ensure_ascii=False, separators=(",", ":"))
+
+
+def main():
+    src = Path(os.environ.get("SOURCE_JSONL", str(DEFAULT_SRC))).expanduser()
+    out = Path(os.environ.get("OUTPUT_JSON", str(DEFAULT_OUT))).expanduser()
+    manifest_out = Path(os.environ.get("OUTPUT_JSON_MANIFEST", str(DEFAULT_OUT_MANIFEST))).expanduser()
+    trends_out = Path(os.environ.get("OUTPUT_TRENDS_JSON", str(DEFAULT_TRENDS_OUT))).expanduser()
+    ui_noise_report_out = Path(
+        os.environ.get("OUTPUT_UI_NOISE_REPORT_JSON", str(DEFAULT_UI_NOISE_REPORT_OUT))
+    ).expanduser()
+
+    rows = []
+    if iter_archive_part_paths(src):
+        rows = load_archive_rows(src)
     else:
         if out.exists():
             print(f"WARN: source not found: {src}. Keep existing output: {out}")
@@ -1012,14 +1103,13 @@ def main():
     os.makedirs(out.parent, exist_ok=True)
     os.makedirs(trends_out.parent, exist_ok=True)
     os.makedirs(ui_noise_report_out.parent, exist_ok=True)
-    with out.open("w", encoding="utf-8") as file:
-        json.dump(rows, file, ensure_ascii=False, separators=(",", ":"))
+    write_json_parts(rows, out, manifest_out)
     with trends_out.open("w", encoding="utf-8") as file:
         json.dump(trends, file, ensure_ascii=False, separators=(",", ":"))
     with ui_noise_report_out.open("w", encoding="utf-8") as file:
         json.dump(ui_noise_report, file, ensure_ascii=False, separators=(",", ":"))
 
-    print(f"OK: wrote {len(rows)} rows -> {out}")
+    print(f"OK: wrote {len(rows)} rows -> {manifest_out}")
     print(f"OK: wrote trends -> {trends_out}")
     print(f"OK: wrote ui noise report -> {ui_noise_report_out}")
     return 0
