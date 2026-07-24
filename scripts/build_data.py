@@ -1124,14 +1124,14 @@ def load_archive_rows(src: Path):
                         summary = bullet
                         body = bullet
 
-                keywords = extract_keywords(
-                    row.get("title", ""),
-                    scraped_body or body or summary,
-                    ai_summary or summary,
-                    url=row.get("url", ""),
-                )
+                keywords = row.get("keywords") or []
                 if not keywords:
-                    keywords = row.get("keywords") or []
+                    keywords = extract_keywords(
+                        row.get("title", ""),
+                        scraped_body or body or summary,
+                        ai_summary or summary,
+                        url=row.get("url", ""),
+                    )
                 explanation_levels = row.get("explanation_levels")
                 if not isinstance(explanation_levels, dict):
                     explanation_levels = build_explanation_variants_from_summary(

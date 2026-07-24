@@ -38,6 +38,7 @@ except Exception:
 NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+PREFERRED_LLM_BACKEND = os.environ.get("PREFERRED_LLM_BACKEND", "codex").strip().lower()
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Seoul")
 MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
@@ -45,6 +46,7 @@ ARCHIVE_SPLIT_MAX_BYTES = max(
     1024 * 1024,
     int(os.environ.get("ARCHIVE_SPLIT_MAX_BYTES", str(47 * 1024 * 1024))),
 )
+EXPLANATION_BACKFILL_LIMIT = max(0, int(os.environ.get("EXPLANATION_BACKFILL_LIMIT", "5")))
 ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "40")))
 NEWS_PAGE_SIZE = max(20, min(100, int(os.environ.get("NEWS_PAGE_SIZE", "100"))))
 MAX_NEWS_PAGES = max(1, int(os.environ.get("MAX_NEWS_PAGES", "3")))
@@ -291,6 +293,12 @@ def llm_core_summary(title: str, description: str, content: str) -> str:
         f"설명: {description}\n"
         f"본문: {content}\n"
     )
+    if PREFERRED_LLM_BACKEND == "codex":
+        txt = run_codex_cli_summary(prompt)
+        if txt:
+            return txt
+    if not OPENAI_API_KEY:
+        return ""
     payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
     req = urllib.request.Request(
         "https://api.openai.com/v1/responses",
@@ -316,6 +324,12 @@ def llm_format_bullets(title: str, core_summary: str) -> str:
         f"제목: {title}\n"
         f"요약문: {core_summary}\n"
     )
+    if PREFERRED_LLM_BACKEND == "codex":
+        txt = run_codex_cli_summary(prompt)
+        if txt:
+            return normalize_bullet_output(txt)
+    if not OPENAI_API_KEY:
+        return ""
     payload = {
         "model": OPENAI_MODEL,
         "input": prompt,
@@ -644,6 +658,28 @@ def _extract_json_object(text: str):
         return {}
 
 
+def _openai_json_response(prompt: str):
+    if not OPENAI_API_KEY:
+        return {}
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": prompt,
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=40) as resp:
+        out = json.loads(resp.read().decode("utf-8", errors="replace"))
+    return _extract_json_object(out.get("output_text", ""))
+
+
 def _validate_explanation_levels(payload):
     required_keys = ["middle_school", "high_school", "university", "expert"]
     if not isinstance(payload, dict):
@@ -674,7 +710,7 @@ def _validate_explanation_levels(payload):
 
 def build_explanation_levels(title: str, ai_summary: str, body_text: str):
     parsed = _parse_ai_summary(ai_summary)
-    if OPENAI_API_KEY and parsed["takeaway"] and len(parsed["points"]) >= 3:
+    if parsed["takeaway"] and len(parsed["points"]) >= 3:
         prompt = (
             "아래 기사 요약을 바탕으로 다정한 존댓말 어투의 4단계 설명 데이터를 JSON으로 작성해줘.\n"
             "- 단계 키는 middle_school, high_school, university, expert 를 사용\n"
@@ -694,10 +730,16 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             f"주요 포인트: {json.dumps(parsed['points'], ensure_ascii=False)}\n"
             f"본문 참고: {clean_text(body_text)[:1800]}\n"
         )
-        payload = _extract_json_object(run_codex_cli_summary(prompt))
-        valid = _validate_explanation_levels(payload)
-        if valid:
-            return valid
+        if PREFERRED_LLM_BACKEND == "codex":
+            payload = _extract_json_object(run_codex_cli_summary(prompt))
+            valid = _validate_explanation_levels(payload)
+            if valid:
+                return valid
+        if OPENAI_API_KEY:
+            payload = _openai_json_response(prompt)
+            valid = _validate_explanation_levels(payload)
+            if valid:
+                return valid
     return build_explanation_variants_from_summary(title, ai_summary)
 
 
@@ -1489,6 +1531,111 @@ def split_archive_lines(path: str):
     return lines
 
 
+def load_archive_rows(path: str):
+    seen = set()
+    rows = []
+    for archive_path in iter_archive_part_paths(path):
+        with open(archive_path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                rid = str(row.get("id", "")).strip()
+                if rid and rid in seen:
+                    continue
+                if rid:
+                    seen.add(rid)
+                rows.append(row)
+    return rows
+
+
+def _parse_row_timestamp(value: str):
+    raw = clean_text(value)
+    if not raw:
+        return dt.datetime.fromtimestamp(0, tz=dt.timezone.utc)
+    raw = raw.replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(raw)
+    except Exception:
+        return dt.datetime.fromtimestamp(0, tz=dt.timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def _row_timestamp(row: dict):
+    for key in ("fetched_at", "archived_at", "article_published_at", "published_at"):
+        value = row.get(key)
+        if value:
+            return _parse_row_timestamp(value)
+    return dt.datetime.fromtimestamp(0, tz=dt.timezone.utc)
+
+
+def _is_template_explanation_levels(levels):
+    if not isinstance(levels, dict):
+        return True
+    generic_markers = (
+        "쉽고 또렷하게 풀어드릴게요",
+        "핵심 원인과 흐름을 함께 살펴볼게요",
+        "구조와 메커니즘 중심으로 정리해 드릴게요",
+        "실무 메커니즘과 시장 영향까지 압축해 드릴게요",
+        "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
+        "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
+        "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
+        "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
+    )
+    for key in ("middle_school", "high_school", "university", "expert"):
+        item = levels.get(key)
+        if not isinstance(item, dict):
+            return True
+        title = clean_text(item.get("title", ""))
+        takeaway = clean_text(item.get("takeaway", ""))
+        points = item.get("points", [])
+        if not title or not takeaway or not isinstance(points, list) or len(points) != 3:
+            return True
+        if any(marker in title or marker in takeaway for marker in generic_markers):
+            return True
+    return False
+
+
+def refresh_existing_explanations(path: str, limit: int):
+    if limit <= 0:
+        return 0
+    rows = load_archive_rows(path)
+    candidates = []
+    for idx, row in enumerate(rows):
+        source = clean_text(row.get("scraped_body") or row.get("body") or row.get("summary"))
+        if not source:
+            continue
+        if not _is_template_explanation_levels(row.get("explanation_levels")):
+            continue
+        candidates.append((_row_timestamp(row), idx))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
+    updated = 0
+    for _, idx in candidates[:limit]:
+        row = rows[idx]
+        source = clean_text(row.get("scraped_body") or row.get("body") or row.get("summary"))
+        title = clean_text(row.get("title", ""))
+        ai_summary = str(row.get("ai_summary", "") or "")
+        if not _is_valid_ai_summary(ai_summary, source):
+            ai_summary = build_ai_summary(title, clean_text(row.get("summary", "")), source)
+            if _is_valid_ai_summary(ai_summary, source):
+                row["ai_summary"] = ai_summary
+        row["explanation_levels"] = build_explanation_levels(title, row.get("ai_summary", ai_summary), source)
+        updated += 1
+        if updated % 5 == 0:
+            rewrite_archive_parts(path, [json.dumps(item, ensure_ascii=False) + "\n" for item in rows])
+
+    if updated and updated % 5:
+        rewrite_archive_parts(path, [json.dumps(row, ensure_ascii=False) + "\n" for row in rows])
+    return updated
+
+
 def rewrite_archive_parts(path: str, lines):
     base = Path(path)
     os.makedirs(base.parent, exist_ok=True)
@@ -1593,6 +1740,10 @@ def main() -> int:
         count, paths = rebalance_archive_parts(ARCHIVE_PATH)
         print(f"OK: rebalanced archive rows={count}, parts={','.join(paths)}")
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--refresh-explanations":
+        updated = refresh_existing_explanations(ARCHIVE_PATH, EXPLANATION_BACKFILL_LIMIT)
+        print(f"OK: refreshed_explanations={updated}, archive={ARCHIVE_PATH}")
+        return 0
 
     if not NEWSAPI_KEY:
         return fail("NEWSAPI_KEY is required")
@@ -1672,9 +1823,11 @@ def main() -> int:
             )
 
     added = append_entries(ARCHIVE_PATH, entries)
+    refreshed = refresh_existing_explanations(ARCHIVE_PATH, EXPLANATION_BACKFILL_LIMIT)
     print(
         f"OK: archive={ARCHIVE_PATH}, added={added}, "
-        f"it_candidates={len(it_articles)}, job_candidates={len(job_articles)}"
+        f"it_candidates={len(it_articles)}, job_candidates={len(job_articles)}, "
+        f"refreshed_explanations={refreshed}"
     )
     return 0
 
