@@ -15,7 +15,11 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
-from build_data import extract_keywords, filter_lines_by_title_relevance
+from build_data import (
+    build_explanation_variants_from_summary,
+    extract_keywords,
+    filter_lines_by_title_relevance,
+)
 
 try:
     from playwright.sync_api import sync_playwright
@@ -624,6 +628,73 @@ def build_ai_summary(title: str, description: str, body_text: str) -> str:
 
     fallback = _fallback_ai_summary(title, source)
     return fallback if _is_valid_ai_summary(fallback, source) else "요약할 수 없는 내용입니다"
+
+
+def _extract_json_object(text: str):
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        return json.loads(raw[start : end + 1])
+    except Exception:
+        return {}
+
+
+def _validate_explanation_levels(payload):
+    required_keys = ["middle_school", "high_school", "university", "expert"]
+    if not isinstance(payload, dict):
+        return {}
+    out = {}
+    for key in required_keys:
+        item = payload.get(key)
+        if not isinstance(item, dict):
+            return {}
+        title = clean_text(item.get("title", ""))
+        takeaway = clean_text(item.get("takeaway", ""))
+        points = [clean_text(point) for point in item.get("points", []) if clean_text(point)]
+        if not title or not takeaway or len(points) < 3:
+            return {}
+        out[key] = {
+            "label": {
+                "middle_school": "중학생 수준",
+                "high_school": "고등학생 수준",
+                "university": "대학생 수준",
+                "expert": "전문가 수준",
+            }[key],
+            "title": title,
+            "takeaway": takeaway,
+            "points": points[:3],
+        }
+    return out
+
+
+def build_explanation_levels(title: str, ai_summary: str, body_text: str):
+    parsed = _parse_ai_summary(ai_summary)
+    if OPENAI_API_KEY and parsed["takeaway"] and len(parsed["points"]) >= 3:
+        prompt = (
+            "아래 기사 요약을 바탕으로 다정한 존댓말 어투의 4단계 설명 데이터를 JSON으로 작성해줘.\n"
+            "- 단계 키는 middle_school, high_school, university, expert 를 사용\n"
+            "- 각 단계는 title, takeaway, points(길이 3 배열)를 가져야 함\n"
+            "- middle_school: 중학생 눈높이, 쉬운 비유와 쉬운 단어 사용\n"
+            "- high_school: 고등학생 눈높이, 개념과 원인을 연결\n"
+            "- university: 대학생 눈높이, 구조와 메커니즘 설명\n"
+            "- expert: 실무 전문가 눈높이, 제도/시장/메커니즘 중심\n"
+            "- 모든 설명은 원문 사실을 벗어나지 말 것\n"
+            "- 출력은 JSON만 반환\n\n"
+            f"기사 제목: {title}\n"
+            f"핵심 요약: {parsed['takeaway']}\n"
+            f"주요 포인트: {json.dumps(parsed['points'], ensure_ascii=False)}\n"
+            f"본문 참고: {clean_text(body_text)[:1800]}\n"
+        )
+        payload = _extract_json_object(run_codex_cli_summary(prompt))
+        valid = _validate_explanation_levels(payload)
+        if valid:
+            return valid
+    return build_explanation_variants_from_summary(title, ai_summary)
 
 
 def format_crawled_body(title: str, description: str, body_text: str) -> str:
@@ -1562,6 +1633,7 @@ def main() -> int:
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
             ai_summary = build_ai_summary(title, desc, body_raw)
+            explanation_levels = build_explanation_levels(title, ai_summary, body_raw or formatted_body or desc)
             keywords = extract_keywords(
                 title,
                 body_raw or formatted_body or desc,
@@ -1580,6 +1652,7 @@ def main() -> int:
                     # Detail view body should show formatted crawled content.
                     "body": formatted_body or summary,
                     "ai_summary": ai_summary,
+                    "explanation_levels": explanation_levels,
                     "thumbnail": thumb,
                     "scraped_body": body_raw,
                     "url": url,

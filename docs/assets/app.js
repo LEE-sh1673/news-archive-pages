@@ -16,6 +16,7 @@ let selectedCategory = "IT";
 let selectedPeriod = "weekly";
 let selectedKeyword = "";
 let detailBackPath = null;
+let currentExplanationLevel = "middle_school";
 
 const el = {
   homeTitle: document.getElementById("homeTitle"),
@@ -53,6 +54,7 @@ const el = {
   detailTitle: document.getElementById("detailTitle"),
   detailMeta: document.getElementById("detailMeta"),
   detailKeywords: document.getElementById("detailKeywords"),
+  detailExplanationTabs: document.getElementById("detailExplanationTabs"),
   detailAiSummary: document.getElementById("detailAiSummary"),
   detailThumbnail: document.getElementById("detailThumbnail"),
   detailBody: document.getElementById("detailBody"),
@@ -124,6 +126,53 @@ function aiSummaryToHtml(text) {
   }
   if (parts.length === 0) return `<p>${escapeHtml(rawLines.join(" "))}</p>`;
   return parts.join("");
+}
+
+function explanationLevelToHtml(levelData) {
+  if (!levelData) return "<p>설명 데이터를 준비하지 못했습니다.</p>";
+  const points = Array.isArray(levelData.points) ? levelData.points : [];
+  const items = points.map((point) => `<li>${escapeHtml(point)}</li>`).join("");
+  return [
+    `<p><strong>제목:</strong> ${escapeHtml(levelData.title || "")}</p>`,
+    `<p><strong>핵심 요약:</strong> ${escapeHtml(levelData.takeaway || "")}</p>`,
+    items ? `<p><strong>주요 포인트</strong></p><ul>${items}</ul>` : "",
+  ].join("");
+}
+
+function getExplanationLevels(post) {
+  if (post?.explanation_levels && typeof post.explanation_levels === "object") {
+    return post.explanation_levels;
+  }
+  return {};
+}
+
+function renderExplanationTabs(post) {
+  const explanationLevels = getExplanationLevels(post);
+  const keys = ["middle_school", "high_school", "university", "expert"];
+  const availableKeys = keys.filter((key) => explanationLevels[key]);
+  if (availableKeys.length === 0) {
+    el.detailExplanationTabs.textContent = "";
+    el.detailAiSummary.innerHTML = aiSummaryToHtml(post.ai_summary || "요약할 수 없는 내용입니다");
+    return;
+  }
+  if (!availableKeys.includes(currentExplanationLevel)) {
+    currentExplanationLevel = availableKeys[0];
+  }
+
+  el.detailExplanationTabs.textContent = "";
+  availableKeys.forEach((key) => {
+    const item = explanationLevels[key];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `explanation-tab${currentExplanationLevel === key ? " active" : ""}`;
+    button.textContent = item.label || key;
+    button.addEventListener("click", () => {
+      currentExplanationLevel = key;
+      renderExplanationTabs(post);
+    });
+    el.detailExplanationTabs.appendChild(button);
+  });
+  el.detailAiSummary.innerHTML = explanationLevelToHtml(explanationLevels[currentExplanationLevel]);
 }
 
 function parseDate(value) {
@@ -628,6 +677,7 @@ function openDetail(id, context = {}, updateHistory = true) {
   if (!post) return;
 
   currentPostId = String(post.id);
+  currentExplanationLevel = "middle_school";
   detailBackPath = context.from === "news"
     ? newsPath({
         category: context.listCategory || "",
@@ -667,7 +717,7 @@ function openDetail(id, context = {}, updateHistory = true) {
     });
     el.detailKeywords.appendChild(chip);
   });
-  el.detailAiSummary.innerHTML = aiSummaryToHtml(post.ai_summary || "요약할 수 없는 내용입니다");
+  renderExplanationTabs(post);
   if (post.thumbnail) {
     el.detailThumbnail.src = post.thumbnail;
     el.detailThumbnail.classList.remove("hidden");

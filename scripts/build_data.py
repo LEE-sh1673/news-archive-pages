@@ -378,6 +378,98 @@ def make_bullet_summary(text: str, max_lines: int = 24) -> str:
     return "\n".join(out[:max_lines])
 
 
+def parse_ai_summary_block(text: str):
+    title = ""
+    takeaway = ""
+    points = []
+    for raw in str(text or "").splitlines():
+        line = sanitize(raw, "summary")
+        if not line:
+            continue
+        if line.startswith("제목:"):
+            title = line.replace("제목:", "", 1).strip()
+            continue
+        if line.startswith("핵심 요약:"):
+            takeaway = line.replace("핵심 요약:", "", 1).strip()
+            continue
+        if line.startswith("- 주요 포인트:"):
+            point = line.replace("- 주요 포인트:", "", 1).strip()
+            if point:
+                points.append(point)
+            continue
+        if line.startswith("주요 포인트:"):
+            point = line.replace("주요 포인트:", "", 1).strip()
+            if point:
+                points.append(point)
+    return {
+        "title": title,
+        "takeaway": takeaway,
+        "points": points[:3],
+    }
+
+
+def ensure_sentence(text: str) -> str:
+    clean = sanitize(text, "summary").strip(" -")
+    if not clean:
+        return ""
+    if clean[-1] not in ".!?。요다":
+        clean = clean + "."
+    return clean
+
+
+def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
+    parsed = parse_ai_summary_block(ai_summary)
+    base_title = parsed["title"] or sanitize(article_title, "title") or "기사 요약"
+    takeaway = ensure_sentence(parsed["takeaway"] or "기사의 핵심 내용을 정리했어요")
+    points = [ensure_sentence(point) for point in parsed["points"] if ensure_sentence(point)]
+    while len(points) < 3:
+        points.append("핵심 내용을 추가로 정리할 수 있도록 본문 정보를 더 보완하고 있어요.")
+
+    variants = {
+        "middle_school": {
+            "label": "중학생 수준",
+            "title": f"{base_title}을(를) 쉽게 이해할 수 있도록 차근차근 설명해 드릴게요",
+            "takeaway": f"{takeaway} 어려운 표현은 줄이고, 왜 중요한지 먼저 잡아드릴게요.",
+            "points": [
+                f"{points[0]} 먼저 무슨 일이 있었는지 편하게 이해하시면 돼요.",
+                f"{points[1]} 왜 이런 변화가 생겼는지 함께 보면 더 쉬워져요.",
+                f"{points[2]} 앞으로 어떤 영향이 있을지도 같이 생각해 볼 수 있어요.",
+            ],
+        },
+        "high_school": {
+            "label": "고등학생 수준",
+            "title": f"{base_title}의 구조와 배경을 개념 중심으로 정리해 드릴게요",
+            "takeaway": f"{takeaway} 개념과 원인을 함께 연결해서 이해할 수 있게 설명해 드릴게요.",
+            "points": [
+                f"{points[0]} 사건의 직접적인 원인과 핵심 변수를 함께 보시면 좋아요.",
+                f"{points[1]} 제도나 구조가 어떻게 작동하는지도 같이 이해하는 것이 중요해요.",
+                f"{points[2]} 결과적으로 시장이나 산업에 어떤 파급이 생기는지 연결해 볼 수 있어요.",
+            ],
+        },
+        "university": {
+            "label": "대학생 수준",
+            "title": f"{base_title}을(를) 구조적 맥락과 메커니즘 중심으로 설명해 드릴게요",
+            "takeaway": f"{takeaway} 배경, 작동 원리, 파급 효과를 함께 보면서 해석해 볼 수 있어요.",
+            "points": [
+                f"{points[0]} 현상 자체보다 그것이 발생한 메커니즘을 함께 보는 것이 중요해요.",
+                f"{points[1]} 제도 변화나 시장 구조가 실제로 어떤 행동 변화를 유도하는지 살펴볼 수 있어요.",
+                f"{points[2]} 향후 정책·산업·시장 관점에서 어떤 후속 효과가 이어질지도 해석할 수 있어요.",
+            ],
+        },
+        "expert": {
+            "label": "전문가 수준",
+            "title": f"{base_title}을(를) 실무·시장 메커니즘 관점에서 압축 설명해 드릴게요",
+            "takeaway": f"{takeaway} 실무적으로는 제도 설계, 집행 방식, 시장 임팩트까지 함께 봐야 해요.",
+            "points": [
+                f"{points[0]} 실무에서는 해당 이슈가 어떤 실행 리스크를 만드는지가 핵심이에요.",
+                f"{points[1]} 규제·상품 구조·유동성 같은 세부 메커니즘을 함께 봐야 판단 정확도가 올라가요.",
+                f"{points[2]} 후속 대응이 시장 구조와 참여자 행동을 어떻게 바꿀지도 함께 점검해야 해요.",
+            ],
+        },
+    }
+    return variants
+
+
 def parse_dt(value: str):
     raw = sanitize(value)
     if not raw:
@@ -999,6 +1091,12 @@ def load_archive_rows(src: Path):
                 )
                 if not keywords:
                     keywords = row.get("keywords") or []
+                explanation_levels = row.get("explanation_levels")
+                if not isinstance(explanation_levels, dict):
+                    explanation_levels = build_explanation_variants_from_summary(
+                        row.get("title", ""),
+                        ai_summary or summary,
+                    )
 
                 rows.append(
                     {
@@ -1019,6 +1117,7 @@ def load_archive_rows(src: Path):
                         "published_at": sanitize(row.get("published_at"), "published_at"),
                         "archived_at": sanitize(row.get("archived_at"), "archived_at"),
                         "keywords": [sanitize(keyword) for keyword in keywords if sanitize(keyword)],
+                        "explanation_levels": explanation_levels,
                     }
                 )
     return rows
