@@ -446,13 +446,41 @@ def explanation_point(base: str, extra: str) -> str:
     return f"{core} {extra}"
 
 
+def _normalize_explanation_points(points):
+    clean_points = [ensure_sentence(point) for point in points if ensure_sentence(point)]
+    while len(clean_points) < 3:
+        clean_points.append("핵심 내용을 추가로 정리할 수 있도록 본문 정보를 더 보완하고 있어요.")
+    return clean_points[:3]
+
+
 def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
     parsed = parse_ai_summary_block(ai_summary)
     base_title = parsed["title"] or sanitize(article_title, "title") or "기사 요약"
     takeaway = ensure_sentence(parsed["takeaway"] or "기사의 핵심 내용을 정리했어요")
-    points = [ensure_sentence(point) for point in parsed["points"] if ensure_sentence(point)]
-    while len(points) < 3:
-        points.append("핵심 내용을 추가로 정리할 수 있도록 본문 정보를 더 보완하고 있어요.")
+    points = _normalize_explanation_points(parsed["points"])
+
+    point_guides = {
+        "middle_school": [
+            "이 부분이 수익이나 성과가 좋아진 이유라는 점을 편하게 보시면 돼요",
+            "이 부분이 회사가 새로 넓히는 사업 방향이라고 이해하시면 쉬워요",
+            "이 부분이 앞으로 기대하는 성장 흐름이라는 점을 함께 보시면 좋아요",
+        ],
+        "high_school": [
+            "즉, 실적 개선의 직접적인 배경과 수익성 회복 요인을 보여줍니다",
+            "즉, 회사가 어떤 사업 축으로 포트폴리오를 넓히는지 설명합니다",
+            "즉, 앞으로 중장기 성장 동력이 어디서 나올지를 보여줍니다",
+        ],
+        "university": [
+            "즉, 단기 실적 반등을 만든 메커니즘과 이익 체력 회복의 근거를 설명합니다",
+            "즉, 기존 사업에서 신사업으로 이동하는 포트폴리오 재편 흐름을 보여줍니다",
+            "즉, 설비 가동과 시장 확대가 향후 밸류에이션에 미칠 영향을 해석하게 해줍니다",
+        ],
+        "expert": [
+            "즉, 마진 리커버리와 볼륨 개선이 손익 구조에 어떤 변화를 만들었는지 보여줍니다",
+            "즉, 회사가 어떤 전자소재 축으로 밸류체인을 고도화하는지 확인할 수 있습니다",
+            "즉, 향후 CAPEX 결실과 매출 믹스 변화가 리레이팅 포인트가 될 수 있음을 시사합니다",
+        ],
+    }
 
     variants = {
         "middle_school": {
@@ -463,9 +491,9 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
                 "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
             ),
             "points": [
-                explanation_point(points[0], "먼저 어떤 일이 있었는지 편하게 이해하시면 돼요"),
-                explanation_point(points[1], "왜 이런 변화가 나왔는지도 함께 보시면 좋아요"),
-                explanation_point(points[2], "앞으로 어떤 영향이 이어질지도 같이 살펴보시면 돼요"),
+                explanation_point(points[0], point_guides["middle_school"][0]),
+                explanation_point(points[1], point_guides["middle_school"][1]),
+                explanation_point(points[2], point_guides["middle_school"][2]),
             ],
         },
         "high_school": {
@@ -476,9 +504,9 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
                 "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
             ),
             "points": [
-                explanation_point(points[0], "직접적인 배경과 핵심 변수를 같이 보시면 이해가 빨라져요"),
-                explanation_point(points[1], "제도나 구조가 어떻게 움직이는지도 함께 연결해 보시면 좋아요"),
-                explanation_point(points[2], "이 변화가 시장이나 산업에 남길 파장도 같이 생각해 볼 수 있어요"),
+                explanation_point(points[0], point_guides["high_school"][0]),
+                explanation_point(points[1], point_guides["high_school"][1]),
+                explanation_point(points[2], point_guides["high_school"][2]),
             ],
         },
         "university": {
@@ -489,9 +517,9 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
                 "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
             ),
             "points": [
-                explanation_point(points[0], "현상 자체보다 그 배경 메커니즘까지 함께 보시는 것이 중요해요"),
-                explanation_point(points[1], "제도 변화나 시장 구조가 어떤 행동 변화를 유도하는지도 읽어볼 수 있어요"),
-                explanation_point(points[2], "정책과 산업, 시장 관점의 후속 효과까지 이어서 해석해 볼 수 있어요"),
+                explanation_point(points[0], point_guides["university"][0]),
+                explanation_point(points[1], point_guides["university"][1]),
+                explanation_point(points[2], point_guides["university"][2]),
             ],
         },
         "expert": {
@@ -502,9 +530,9 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
                 "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
             ),
             "points": [
-                explanation_point(points[0], "실무에서는 이 지점이 어떤 실행 리스크를 만드는지까지 같이 보셔야 해요"),
-                explanation_point(points[1], "규제와 상품 구조, 유동성 메커니즘을 함께 봐야 판단 정확도가 높아져요"),
-                explanation_point(points[2], "후속 대응이 시장 구조와 참여자 행동을 어떻게 바꿀지도 점검하셔야 합니다"),
+                explanation_point(points[0], point_guides["expert"][0]),
+                explanation_point(points[1], point_guides["expert"][1]),
+                explanation_point(points[2], point_guides["expert"][2]),
             ],
         },
     }

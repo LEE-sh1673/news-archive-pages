@@ -47,6 +47,7 @@ ARCHIVE_SPLIT_MAX_BYTES = max(
     int(os.environ.get("ARCHIVE_SPLIT_MAX_BYTES", str(47 * 1024 * 1024))),
 )
 EXPLANATION_BACKFILL_LIMIT = max(0, int(os.environ.get("EXPLANATION_BACKFILL_LIMIT", "5")))
+EXPLANATION_REFRESH_LIMIT = max(0, int(os.environ.get("EXPLANATION_REFRESH_LIMIT", "30")))
 ITEM_LIMIT_PER_CATEGORY = max(1, int(os.environ.get("ITEM_LIMIT_PER_CATEGORY", "40")))
 NEWS_PAGE_SIZE = max(20, min(100, int(os.environ.get("NEWS_PAGE_SIZE", "100"))))
 MAX_NEWS_PAGES = max(1, int(os.environ.get("MAX_NEWS_PAGES", "3")))
@@ -57,6 +58,7 @@ THUMBNAIL_DIR = Path(os.environ.get("THUMBNAIL_DIR", str(ROOT_DIR / "docs" / "as
 THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
+CODEX_TIMEOUT_SECONDS = max(15, int(os.environ.get("CODEX_TIMEOUT_SECONDS", "45")))
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
 _NEWSAPI_SESSION = None
 
@@ -601,7 +603,7 @@ def run_codex_cli_summary(prompt: str) -> str:
         "exec",
         "--skip-git-repo-check",
         "--sandbox",
-        "read-only",
+        "workspace-write",
         "-o",
         out_path,
         "-",
@@ -612,7 +614,7 @@ def run_codex_cli_summary(prompt: str) -> str:
             input=prompt,
             text=True,
             capture_output=True,
-            timeout=120,
+            timeout=CODEX_TIMEOUT_SECONDS,
             check=True,
         )
         with open(out_path, "r", encoding="utf-8", errors="replace") as f:
@@ -715,6 +717,9 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             "아래 기사 요약을 바탕으로 다정한 존댓말 어투의 4단계 설명 데이터를 JSON으로 작성해줘.\n"
             "- 단계 키는 middle_school, high_school, university, expert 를 사용\n"
             "- 각 단계는 title, takeaway, points(길이 3 배열)를 가져야 함\n"
+            "- 네 단계는 모두 같은 기사 흐름을 설명해야 하며, 서로 다른 사실이나 새로운 쟁점을 추가하면 안 됨\n"
+            "- 네 단계 모두 동일한 3개 핵심 포인트 순서를 유지하고, 난이도와 표현만 바꿔야 함\n"
+            "- 보통 1번 포인트는 실적/원인, 2번 포인트는 사업 확장/구조 변화, 3번 포인트는 향후 성장/영향 흐름으로 맞춘다고 생각하면 됨\n"
             "- title 은 해당 수준에 맞게 요약과 어투가 반영된 자연스러운 문장형 제목으로 작성\n"
             "- takeaway 는 2문장 이내의 핵심 요약으로 작성\n"
             "- points 는 반드시 3개만 작성하고, 각 항목은 한 문장으로 짧고 또렷하게 작성\n"
@@ -724,6 +729,7 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             "- university: 대학생 눈높이, 구조와 메커니즘 설명\n"
             "- expert: 실무 전문가 눈높이, 제도/시장/메커니즘 중심\n"
             "- 네 단계 모두 '제목 / 핵심 요약 / 주요 포인트 3개' 구조를 떠올리되 JSON만 반환\n"
+            "- 같은 사건을 다른 난이도로 풀어쓴다는 점이 핵심이며, 단계별로 포인트 방향이 달라지면 안 됨\n"
             "- 출력은 JSON만 반환\n\n"
             f"기사 제목: {title}\n"
             f"핵심 요약: {parsed['takeaway']}\n"
@@ -1636,6 +1642,35 @@ def refresh_existing_explanations(path: str, limit: int):
     return updated
 
 
+def refresh_latest_explanations(path: str, limit: int):
+    if limit <= 0:
+        return 0
+    rows = load_archive_rows(path)
+    ranked = [(_row_timestamp(row), idx) for idx, row in enumerate(rows)]
+    ranked.sort(key=lambda item: item[0], reverse=True)
+
+    updated = 0
+    for _, idx in ranked[:limit]:
+        row = rows[idx]
+        source = clean_text(row.get("scraped_body") or row.get("body") or row.get("summary"))
+        if not source:
+            continue
+        title = clean_text(row.get("title", ""))
+        ai_summary = str(row.get("ai_summary", "") or "")
+        if not _is_valid_ai_summary(ai_summary, source):
+            ai_summary = build_ai_summary(title, clean_text(row.get("summary", "")), source)
+            if _is_valid_ai_summary(ai_summary, source):
+                row["ai_summary"] = ai_summary
+        row["explanation_levels"] = build_explanation_levels(title, row.get("ai_summary", ai_summary), source)
+        updated += 1
+        if updated % 5 == 0:
+            rewrite_archive_parts(path, [json.dumps(item, ensure_ascii=False) + "\n" for item in rows])
+
+    if updated and updated % 5:
+        rewrite_archive_parts(path, [json.dumps(row, ensure_ascii=False) + "\n" for row in rows])
+    return updated
+
+
 def rewrite_archive_parts(path: str, lines):
     base = Path(path)
     os.makedirs(base.parent, exist_ok=True)
@@ -1743,6 +1778,10 @@ def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--refresh-explanations":
         updated = refresh_existing_explanations(ARCHIVE_PATH, EXPLANATION_BACKFILL_LIMIT)
         print(f"OK: refreshed_explanations={updated}, archive={ARCHIVE_PATH}")
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "--refresh-latest-explanations":
+        updated = refresh_latest_explanations(ARCHIVE_PATH, EXPLANATION_REFRESH_LIMIT)
+        print(f"OK: refreshed_latest_explanations={updated}, archive={ARCHIVE_PATH}")
         return 0
 
     if not NEWSAPI_KEY:
