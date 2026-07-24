@@ -656,7 +656,7 @@ def _validate_explanation_levels(payload):
         title = clean_text(item.get("title", ""))
         takeaway = clean_text(item.get("takeaway", ""))
         points = [clean_text(point) for point in item.get("points", []) if clean_text(point)]
-        if not title or not takeaway or len(points) < 3:
+        if not title or not takeaway or len(points) != 3:
             return {}
         out[key] = {
             "label": {
@@ -679,11 +679,15 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             "아래 기사 요약을 바탕으로 다정한 존댓말 어투의 4단계 설명 데이터를 JSON으로 작성해줘.\n"
             "- 단계 키는 middle_school, high_school, university, expert 를 사용\n"
             "- 각 단계는 title, takeaway, points(길이 3 배열)를 가져야 함\n"
+            "- title 은 해당 수준에 맞게 요약과 어투가 반영된 자연스러운 문장형 제목으로 작성\n"
+            "- takeaway 는 2문장 이내의 핵심 요약으로 작성\n"
+            "- points 는 반드시 3개만 작성하고, 각 항목은 한 문장으로 짧고 또렷하게 작성\n"
+            "- 원문 사실을 벗어나지 말고, 없는 숫자나 전망을 새로 만들지 말 것\n"
             "- middle_school: 중학생 눈높이, 쉬운 비유와 쉬운 단어 사용\n"
             "- high_school: 고등학생 눈높이, 개념과 원인을 연결\n"
             "- university: 대학생 눈높이, 구조와 메커니즘 설명\n"
             "- expert: 실무 전문가 눈높이, 제도/시장/메커니즘 중심\n"
-            "- 모든 설명은 원문 사실을 벗어나지 말 것\n"
+            "- 네 단계 모두 '제목 / 핵심 요약 / 주요 포인트 3개' 구조를 떠올리되 JSON만 반환\n"
             "- 출력은 JSON만 반환\n\n"
             f"기사 제목: {title}\n"
             f"핵심 요약: {parsed['takeaway']}\n"

@@ -417,6 +417,35 @@ def ensure_sentence(text: str) -> str:
     return clean
 
 
+def explanation_title(base_title: str, suffix: str) -> str:
+    clean = sanitize(base_title, "title").strip()
+    if not clean:
+        clean = "기사 핵심 내용"
+    clean = clean.rstrip(" .!?")
+    return f"{clean}, {suffix}"
+
+
+def explanation_takeaway(base: str, extra: str) -> str:
+    core = ensure_sentence(base) or "기사의 핵심 내용을 정리해 드릴게요."
+    extra = sanitize(extra, "summary").strip()
+    if not extra:
+        return core
+    if extra[-1] not in ".!?。요다":
+        extra = extra + "."
+    return f"{core} {extra}"
+
+
+def explanation_point(base: str, extra: str) -> str:
+    core = ensure_sentence(base) or "핵심 흐름을 함께 살펴보시면 이해에 도움이 돼요."
+    core = core.rstrip()
+    extra = sanitize(extra, "summary").strip()
+    if not extra:
+        return core
+    if extra[-1] not in ".!?。요다":
+        extra = extra + "."
+    return f"{core} {extra}"
+
+
 def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
     parsed = parse_ai_summary_block(ai_summary)
     base_title = parsed["title"] or sanitize(article_title, "title") or "기사 요약"
@@ -428,42 +457,54 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
     variants = {
         "middle_school": {
             "label": "중학생 수준",
-            "title": f"{base_title}을(를) 쉽게 이해할 수 있도록 차근차근 설명해 드릴게요",
-            "takeaway": f"{takeaway} 어려운 표현은 줄이고, 왜 중요한지 먼저 잡아드릴게요.",
+            "title": explanation_title(base_title, "쉽고 또렷하게 풀어드릴게요"),
+            "takeaway": explanation_takeaway(
+                takeaway,
+                "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
+            ),
             "points": [
-                f"{points[0]} 먼저 무슨 일이 있었는지 편하게 이해하시면 돼요.",
-                f"{points[1]} 왜 이런 변화가 생겼는지 함께 보면 더 쉬워져요.",
-                f"{points[2]} 앞으로 어떤 영향이 있을지도 같이 생각해 볼 수 있어요.",
+                explanation_point(points[0], "먼저 어떤 일이 있었는지 편하게 이해하시면 돼요"),
+                explanation_point(points[1], "왜 이런 변화가 나왔는지도 함께 보시면 좋아요"),
+                explanation_point(points[2], "앞으로 어떤 영향이 이어질지도 같이 살펴보시면 돼요"),
             ],
         },
         "high_school": {
             "label": "고등학생 수준",
-            "title": f"{base_title}의 구조와 배경을 개념 중심으로 정리해 드릴게요",
-            "takeaway": f"{takeaway} 개념과 원인을 함께 연결해서 이해할 수 있게 설명해 드릴게요.",
+            "title": explanation_title(base_title, "핵심 원인과 흐름을 함께 살펴볼게요"),
+            "takeaway": explanation_takeaway(
+                takeaway,
+                "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
+            ),
             "points": [
-                f"{points[0]} 사건의 직접적인 원인과 핵심 변수를 함께 보시면 좋아요.",
-                f"{points[1]} 제도나 구조가 어떻게 작동하는지도 같이 이해하는 것이 중요해요.",
-                f"{points[2]} 결과적으로 시장이나 산업에 어떤 파급이 생기는지 연결해 볼 수 있어요.",
+                explanation_point(points[0], "직접적인 배경과 핵심 변수를 같이 보시면 이해가 빨라져요"),
+                explanation_point(points[1], "제도나 구조가 어떻게 움직이는지도 함께 연결해 보시면 좋아요"),
+                explanation_point(points[2], "이 변화가 시장이나 산업에 남길 파장도 같이 생각해 볼 수 있어요"),
             ],
         },
         "university": {
             "label": "대학생 수준",
-            "title": f"{base_title}을(를) 구조적 맥락과 메커니즘 중심으로 설명해 드릴게요",
-            "takeaway": f"{takeaway} 배경, 작동 원리, 파급 효과를 함께 보면서 해석해 볼 수 있어요.",
+            "title": explanation_title(base_title, "구조와 메커니즘 중심으로 정리해 드릴게요"),
+            "takeaway": explanation_takeaway(
+                takeaway,
+                "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
+            ),
             "points": [
-                f"{points[0]} 현상 자체보다 그것이 발생한 메커니즘을 함께 보는 것이 중요해요.",
-                f"{points[1]} 제도 변화나 시장 구조가 실제로 어떤 행동 변화를 유도하는지 살펴볼 수 있어요.",
-                f"{points[2]} 향후 정책·산업·시장 관점에서 어떤 후속 효과가 이어질지도 해석할 수 있어요.",
+                explanation_point(points[0], "현상 자체보다 그 배경 메커니즘까지 함께 보시는 것이 중요해요"),
+                explanation_point(points[1], "제도 변화나 시장 구조가 어떤 행동 변화를 유도하는지도 읽어볼 수 있어요"),
+                explanation_point(points[2], "정책과 산업, 시장 관점의 후속 효과까지 이어서 해석해 볼 수 있어요"),
             ],
         },
         "expert": {
             "label": "전문가 수준",
-            "title": f"{base_title}을(를) 실무·시장 메커니즘 관점에서 압축 설명해 드릴게요",
-            "takeaway": f"{takeaway} 실무적으로는 제도 설계, 집행 방식, 시장 임팩트까지 함께 봐야 해요.",
+            "title": explanation_title(base_title, "실무 메커니즘과 시장 영향까지 압축해 드릴게요"),
+            "takeaway": explanation_takeaway(
+                takeaway,
+                "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
+            ),
             "points": [
-                f"{points[0]} 실무에서는 해당 이슈가 어떤 실행 리스크를 만드는지가 핵심이에요.",
-                f"{points[1]} 규제·상품 구조·유동성 같은 세부 메커니즘을 함께 봐야 판단 정확도가 올라가요.",
-                f"{points[2]} 후속 대응이 시장 구조와 참여자 행동을 어떻게 바꿀지도 함께 점검해야 해요.",
+                explanation_point(points[0], "실무에서는 이 지점이 어떤 실행 리스크를 만드는지까지 같이 보셔야 해요"),
+                explanation_point(points[1], "규제와 상품 구조, 유동성 메커니즘을 함께 봐야 판단 정확도가 높아져요"),
+                explanation_point(points[2], "후속 대응이 시장 구조와 참여자 행동을 어떻게 바꿀지도 점검하셔야 합니다"),
             ],
         },
     }
