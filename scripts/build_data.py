@@ -438,82 +438,34 @@ def build_explanation_variants_from_blueprint(blueprint: dict, article_title: st
     base_title = sanitize(blueprint.get("title"), "title") or sanitize(article_title, "title") or "기사 요약"
     takeaway = ensure_sentence(blueprint.get("takeaway") or "기사의 핵심 내용을 정리했어요")
     points = normalize_structured_key_points(blueprint.get("key_points") or [])
-    flow_order = [sanitize(item, "summary") for item in (blueprint.get("flow_order") or []) if sanitize(item, "summary")]
-    while len(flow_order) < 3:
-        flow_order.append(["배경/원인", "변화/대응", "영향/전망"][len(flow_order)])
-
-    point_guides = {
-        "middle_school": [
-            "이 부분을 보면 왜 이런 일이 시작됐는지 쉽게 이해할 수 있어요",
-            "이 부분을 보면 지금 어떤 새로운 움직임이 있는지 떠올리기 쉬워요",
-            "이 부분을 보면 앞으로 어떤 모습이 기대되는지 함께 생각해 볼 수 있어요",
-        ],
-        "high_school": [
-            f"즉, {flow_order[0]}라는 배경을 보여줍니다",
-            f"즉, {flow_order[1]}라는 전개를 설명합니다",
-            f"즉, {flow_order[2]}라는 후속 흐름을 보여줍니다",
-        ],
-        "university": [
-            f"즉, {flow_order[0]}라는 메커니즘을 설명합니다",
-            f"즉, {flow_order[1]}라는 구조 변화를 보여줍니다",
-            f"즉, {flow_order[2]}라는 파급 효과를 해석하게 해줍니다",
-        ],
-        "expert": [
-            f"즉, {flow_order[0]}라는 실무 배경을 보여줍니다",
-            f"즉, {flow_order[1]}라는 실행 방향을 확인할 수 있습니다",
-            f"즉, {flow_order[2]}라는 시장·운영상 함의를 시사합니다",
-        ],
-    }
-
     return {
         "middle_school": {
             "label": "중학생 수준",
             "title": build_middle_school_title(base_title, takeaway, points),
             "takeaway": build_middle_school_takeaway(takeaway),
             "points": [
-                explanation_point(abstract_middle_school_text(points[0]), point_guides["middle_school"][0]),
-                explanation_point(abstract_middle_school_text(points[1]), point_guides["middle_school"][1]),
-                explanation_point(abstract_middle_school_text(points[2]), point_guides["middle_school"][2]),
+                abstract_middle_school_text(points[0]),
+                abstract_middle_school_text(points[1]),
+                abstract_middle_school_text(points[2]),
             ],
         },
         "high_school": {
             "label": "고등학생 수준",
-            "title": explanation_title(base_title, "핵심 원인과 흐름을 함께 살펴볼게요"),
-            "takeaway": explanation_takeaway(
-                takeaway,
-                "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
-            ),
-            "points": [
-                explanation_point(points[0], point_guides["high_school"][0]),
-                explanation_point(points[1], point_guides["high_school"][1]),
-                explanation_point(points[2], point_guides["high_school"][2]),
-            ],
+            "title": base_title,
+            "takeaway": takeaway,
+            "points": points[:3],
         },
         "university": {
             "label": "대학생 수준",
-            "title": explanation_title(base_title, "구조와 메커니즘 중심으로 정리해 드릴게요"),
-            "takeaway": explanation_takeaway(
-                takeaway,
-                "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
-            ),
-            "points": [
-                explanation_point(points[0], point_guides["university"][0]),
-                explanation_point(points[1], point_guides["university"][1]),
-                explanation_point(points[2], point_guides["university"][2]),
-            ],
+            "title": base_title,
+            "takeaway": takeaway,
+            "points": points[:3],
         },
         "expert": {
             "label": "전문가 수준",
-            "title": explanation_title(base_title, "실무 메커니즘과 시장 영향까지 압축해 드릴게요"),
-            "takeaway": explanation_takeaway(
-                takeaway,
-                "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
-            ),
-            "points": [
-                explanation_point(points[0], point_guides["expert"][0]),
-                explanation_point(points[1], point_guides["expert"][1]),
-                explanation_point(points[2], point_guides["expert"][2]),
-            ],
+            "title": base_title,
+            "takeaway": takeaway,
+            "points": points[:3],
         },
     }
 
@@ -614,7 +566,9 @@ def build_middle_school_title(base_title: str, takeaway: str, points) -> str:
     if re.search(r"정부|지원|정책", simplified) and re.search(r"부담|수수료|도움", simplified):
         return "정부와 여러 기관이 함께 힘을 모아 더 편하고 든든한 방법을 만들고 있어요"
     if re.search(r"AI|인공지능", simplified) and re.search(r"예측|분석|위험", simplified):
-        return "똑똑한 인공지능이 미리 살펴보며 더 안전한 길을 만들어 주고 있어요"
+        if "윌로그" in base_title:
+            return "윌로그가 똑똑한 인공지능으로 물류 위험을 미리 살펴보며 더 안전한 길을 만들고 있어요"
+        return "똑똑한 인공지능이 미리 살펴보며 더 안전한 길을 만들고 있어요"
     title_core = sanitize(base_title, "title").strip(" .!?")
     if not title_core:
         title_core = "이 기사 이야기"
@@ -623,16 +577,8 @@ def build_middle_school_title(base_title: str, takeaway: str, points) -> str:
 
 def build_middle_school_takeaway(takeaway: str) -> str:
     simplified = abstract_middle_school_text(takeaway)
-    simplified = simplified.replace("흐름", "").replace("일", "").strip()
-    if "적자에서 다시 돈을 벌기 시작" in simplified:
-        return explanation_takeaway(
-            simplified,
-            "왜 다시 힘을 냈는지와 앞으로 어떤 멋진 변신을 준비하는지 차근차근 알려드릴게요",
-        )
-    return explanation_takeaway(
-        simplified,
-        "어려운 말 대신 쉬운 표현으로 원인과 결과가 보이게 설명해 드릴게요",
-    )
+    simplified = simplified.replace("흐름", "").strip()
+    return ensure_sentence(simplified)
 
 
 def build_explanation_variants_from_summary(article_title: str, ai_summary: str):

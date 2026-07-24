@@ -784,6 +784,30 @@ def _openai_json_response(prompt: str):
     return _extract_json_object(out.get("output_text", ""))
 
 
+def _contains_generic_explanation_template(text: str) -> bool:
+    raw = clean_text(text)
+    if not raw:
+        return False
+    generic_markers = (
+        "쉽고 또렷하게 풀어드릴게요",
+        "핵심 원인과 흐름을 함께 살펴볼게요",
+        "구조와 메커니즘 중심으로 정리해 드릴게요",
+        "실무 메커니즘과 시장 영향까지 압축해 드릴게요",
+        "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
+        "어려운 말 대신 쉬운 표현으로 원인과 결과가 보이게 설명해 드릴게요",
+        "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
+        "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
+        "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
+        "이 부분을 보면 왜 이런 일이 시작됐는지 쉽게 이해할 수 있어요",
+        "이 부분을 보면 지금 어떤 새로운 움직임이 있는지 떠올리기 쉬워요",
+        "이 부분을 보면 앞으로 어떤 모습이 기대되는지 함께 생각해 볼 수 있어요",
+        "먼저 어떤 일이 있었는지 편하게 이해하시면 돼요",
+        "왜 이런 변화가 나왔는지도 함께 보시면 좋아요",
+        "앞으로 어떤 영향이 이어질지도 같이 살펴보시면 돼요",
+    )
+    return any(marker in raw for marker in generic_markers)
+
+
 def _validate_explanation_levels(payload):
     required_keys = ["middle_school", "high_school", "university", "expert"]
     if not isinstance(payload, dict):
@@ -797,6 +821,10 @@ def _validate_explanation_levels(payload):
         takeaway = clean_text(item.get("takeaway", ""))
         points = [clean_text(point) for point in item.get("points", []) if clean_text(point)]
         if not title or not takeaway or len(points) != 3:
+            return {}
+        if _contains_generic_explanation_template(title) or _contains_generic_explanation_template(takeaway):
+            return {}
+        if any(_contains_generic_explanation_template(point) for point in points):
             return {}
         out[key] = {
             "label": {
@@ -1705,16 +1733,6 @@ def _row_timestamp(row: dict):
 def _is_template_explanation_levels(levels):
     if not isinstance(levels, dict):
         return True
-    generic_markers = (
-        "쉽고 또렷하게 풀어드릴게요",
-        "핵심 원인과 흐름을 함께 살펴볼게요",
-        "구조와 메커니즘 중심으로 정리해 드릴게요",
-        "실무 메커니즘과 시장 영향까지 압축해 드릴게요",
-        "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
-        "개념과 원인을 연결해서 보면 기사 구조가 훨씬 분명하게 보인답니다",
-        "배경과 작동 원리, 그리고 후속 파급 효과까지 함께 해석해 보시면 좋겠습니다",
-        "실무적으로는 제도 설계와 집행 방식, 시장 임팩트까지 함께 보셔야 판단이 정교해집니다",
-    )
     for key in ("middle_school", "high_school", "university", "expert"):
         item = levels.get(key)
         if not isinstance(item, dict):
@@ -1724,7 +1742,9 @@ def _is_template_explanation_levels(levels):
         points = item.get("points", [])
         if not title or not takeaway or not isinstance(points, list) or len(points) != 3:
             return True
-        if any(marker in title or marker in takeaway for marker in generic_markers):
+        if _contains_generic_explanation_template(title) or _contains_generic_explanation_template(takeaway):
+            return True
+        if any(_contains_generic_explanation_template(point) for point in points):
             return True
     return False
 
@@ -1835,9 +1855,10 @@ def refresh_latest_explanations(path: str, limit: int):
             continue
         blueprint = row.get("summary_blueprint") if isinstance(row.get("summary_blueprint"), dict) else {}
         levels = row.get("explanation_levels") if isinstance(row.get("explanation_levels"), dict) else {}
-        if blueprint.get("key_points") and all(isinstance(levels.get(key), dict) for key in ("middle_school", "high_school", "university", "expert")):
+        has_complete_levels = all(isinstance(levels.get(key), dict) for key in ("middle_school", "high_school", "university", "expert"))
+        if blueprint.get("key_points") and has_complete_levels and not _is_template_explanation_levels(levels):
             continue
-        rows[idx] = rebuild_summary_assets(row, force=True)
+        rows[idx] = rebuild_summary_assets(row, force=not blueprint)
         updated += 1
         if updated % 5 == 0:
             rewrite_archive_parts(path, [json.dumps(item, ensure_ascii=False) + "\n" for item in rows])
