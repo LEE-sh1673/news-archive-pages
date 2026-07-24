@@ -21,6 +21,8 @@ from build_data import (
     build_summary_blueprint_from_ai_summary,
     extract_keywords,
     filter_lines_by_title_relevance,
+    middle_school_has_jargon,
+    normalize_middle_school_level,
 )
 
 try:
@@ -61,6 +63,7 @@ THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
 CODEX_TIMEOUT_SECONDS = max(15, int(os.environ.get("CODEX_TIMEOUT_SECONDS", "45")))
+CODEX_DEBUG = os.environ.get("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 MIDDLE_SCHOOL_SYSTEM_PROMPT_PATH = ROOT_DIR / "prompts" / "middle_school_system_prompt.md"
 MIDDLE_SCHOOL_FEWSHOT_PATH = ROOT_DIR / "prompts" / "middle_school_fewshot.md"
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
@@ -714,14 +717,21 @@ def run_codex_cli_summary(prompt: str) -> str:
         "-",
     ]
     try:
-        subprocess.run(
+        proc = subprocess.run(
             cmd,
             input=prompt,
             text=True,
             capture_output=True,
             timeout=CODEX_TIMEOUT_SECONDS,
-            check=True,
+            check=False,
         )
+        if proc.returncode != 0:
+            if CODEX_DEBUG and proc.stderr:
+                print(
+                    f"WARN: codex exec failed rc={proc.returncode}: {proc.stderr[:3000]}",
+                    file=sys.stderr,
+                )
+            return ""
         with open(out_path, "r", encoding="utf-8", errors="replace") as f:
             return _normalize_ai_summary_text(f.read())
     except Exception:
@@ -808,6 +818,100 @@ def _contains_generic_explanation_template(text: str) -> bool:
     return any(marker in raw for marker in generic_markers)
 
 
+def _needs_middle_school_abstraction(levels) -> bool:
+    if not isinstance(levels, dict):
+        return True
+    middle = levels.get("middle_school")
+    if not isinstance(middle, dict):
+        return True
+    fields = [middle.get("title", ""), middle.get("takeaway", "")]
+    fields.extend(middle.get("points", []) if isinstance(middle.get("points"), list) else [])
+    return any(middle_school_has_jargon(str(field)) for field in fields)
+
+
+def _needs_middle_school_codex_rewrite(levels) -> bool:
+    if _needs_middle_school_abstraction(levels):
+        return True
+    if not isinstance(levels, dict):
+        return True
+    middle = levels.get("middle_school")
+    if not isinstance(middle, dict):
+        return True
+    joined = " ".join(
+        [
+            clean_text(middle.get("title", "")),
+            clean_text(middle.get("takeaway", "")),
+            *[clean_text(point) for point in middle.get("points", []) if clean_text(point)],
+        ]
+    )
+    awkward_markers = (
+        "서비스은",
+        "센서 센서",
+        "한곳에서 관리하는 서비스의 기술 실력",
+        "보상 도움까지 이어주는 장치",
+        "인공지능 예측 분석",
+    )
+    return any(marker in joined for marker in awkward_markers)
+
+
+def _rewrite_middle_school_with_codex(title: str, blueprint: dict, body_text: str, middle: dict) -> dict:
+    middle_prompt_doc = _load_prompt_text(MIDDLE_SCHOOL_SYSTEM_PROMPT_PATH)
+    middle_fewshot_doc = _load_prompt_text(MIDDLE_SCHOOL_FEWSHOT_PATH)
+    prompt = (
+        "아래 기사 정보를 바탕으로 중학생 수준 설명만 다시 자연스럽게 써줘.\n"
+        "- 출력은 JSON만 반환\n"
+        "- 키는 title, takeaway, points 를 사용\n"
+        "- title 은 다정한 존댓말의 문장형 제목\n"
+        "- takeaway 는 1~2문장\n"
+        "- points 는 정확히 3개, 각각 한 문장\n"
+        "- 기사 원문 사실 범위만 사용하고 새로운 사실 추가 금지\n"
+        "- 연도, 기업명, 핵심 수치는 가능한 유지\n"
+        "- 어려운 전문 용어는 중학생이 이해할 수 있는 쉬운 말로 바꿔줘\n"
+        "- AI, IoT, SaaS, MCP, EV, 플랫폼, 소재 같은 약어·전문어는 가능한 한 그대로 쓰지 말고 쉬운 한국어로 풀어줘\n"
+        "- 단순 치환처럼 어색한 표현이 나오지 않도록 자연스럽게 풀어써줘\n"
+        "- flow_order 순서를 유지해줘\n\n"
+        f"기사 제목: {title}\n"
+        f"구조화 요약 제목: {blueprint.get('title', '')}\n"
+        f"구조화 핵심 요약: {blueprint.get('takeaway', '')}\n"
+        f"구조화 주요 포인트: {json.dumps(blueprint.get('key_points', []), ensure_ascii=False)}\n"
+        f"포인트 흐름 순서: {json.dumps(blueprint.get('flow_order', []), ensure_ascii=False)}\n"
+        f"현재 중학생 초안: {json.dumps(middle, ensure_ascii=False)}\n"
+        f"본문 참고: {clean_text(body_text)[:1800]}\n"
+    )
+    if middle_prompt_doc:
+        prompt += f"\n[중학생 시스템 프롬프트]\n{middle_prompt_doc}\n"
+    if middle_fewshot_doc:
+        prompt += f"\n[중학생 Few-shot 예시]\n{middle_fewshot_doc}\n"
+
+    if PREFERRED_LLM_BACKEND == "codex":
+        payload = _extract_json_object(run_codex_cli_summary(prompt))
+        if isinstance(payload, dict):
+            title_text = clean_text(payload.get("title", ""))
+            takeaway = clean_text(payload.get("takeaway", ""))
+            points = [clean_text(point) for point in payload.get("points", []) if clean_text(point)]
+            if title_text and takeaway and len(points) == 3:
+                result = {
+                    "label": "중학생 수준",
+                    "title": title_text,
+                    "takeaway": takeaway,
+                    "points": points[:3],
+                }
+                if _needs_middle_school_abstraction({"middle_school": result}):
+                    return normalize_middle_school_level(
+                        result,
+                        blueprint.get("title", "") or title,
+                        blueprint.get("takeaway", ""),
+                        blueprint.get("key_points", []),
+                    )
+                return result
+    return normalize_middle_school_level(
+        middle,
+        blueprint.get("title", "") or title,
+        blueprint.get("takeaway", ""),
+        blueprint.get("key_points", []),
+    )
+
+
 def _validate_explanation_levels(payload):
     required_keys = ["middle_school", "high_school", "university", "expert"]
     if not isinstance(payload, dict):
@@ -837,6 +941,16 @@ def _validate_explanation_levels(payload):
             "takeaway": takeaway,
             "points": points[:3],
         }
+    if "middle_school" in out:
+        blueprint_title = ""
+        blueprint_takeaway = out["middle_school"]["takeaway"]
+        blueprint_points = out["middle_school"]["points"]
+        out["middle_school"] = normalize_middle_school_level(
+            out["middle_school"],
+            blueprint_title,
+            blueprint_takeaway,
+            blueprint_points,
+        )
     return out
 
 
@@ -887,14 +1001,33 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str, struct
             payload = _extract_json_object(run_codex_cli_summary(prompt))
             valid = _validate_explanation_levels(payload)
             if valid:
+                valid["middle_school"] = _rewrite_middle_school_with_codex(
+                    title,
+                    blueprint,
+                    body_text,
+                    valid.get("middle_school", {}),
+                )
                 return valid
         if OPENAI_API_KEY:
             payload = _openai_json_response(prompt)
             valid = _validate_explanation_levels(payload)
             if valid:
+                valid["middle_school"] = _rewrite_middle_school_with_codex(
+                    title,
+                    blueprint,
+                    body_text,
+                    valid.get("middle_school", {}),
+                )
                 return valid
     if blueprint:
-        return build_explanation_variants_from_blueprint(blueprint, article_title=title)
+        levels = build_explanation_variants_from_blueprint(blueprint, article_title=title)
+        levels["middle_school"] = _rewrite_middle_school_with_codex(
+            title,
+            blueprint,
+            body_text,
+            levels.get("middle_school", {}),
+        )
+        return levels
     return build_explanation_variants_from_summary(title, ai_summary)
 
 
@@ -1856,7 +1989,13 @@ def refresh_latest_explanations(path: str, limit: int):
         blueprint = row.get("summary_blueprint") if isinstance(row.get("summary_blueprint"), dict) else {}
         levels = row.get("explanation_levels") if isinstance(row.get("explanation_levels"), dict) else {}
         has_complete_levels = all(isinstance(levels.get(key), dict) for key in ("middle_school", "high_school", "university", "expert"))
-        if blueprint.get("key_points") and has_complete_levels and not _is_template_explanation_levels(levels):
+        if (
+            blueprint.get("key_points")
+            and has_complete_levels
+            and not _is_template_explanation_levels(levels)
+            and not _needs_middle_school_abstraction(levels)
+            and not _needs_middle_school_codex_rewrite(levels)
+        ):
             continue
         rows[idx] = rebuild_summary_assets(row, force=not blueprint)
         updated += 1

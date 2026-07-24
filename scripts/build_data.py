@@ -438,34 +438,28 @@ def build_explanation_variants_from_blueprint(blueprint: dict, article_title: st
     base_title = sanitize(blueprint.get("title"), "title") or sanitize(article_title, "title") or "기사 요약"
     takeaway = ensure_sentence(blueprint.get("takeaway") or "기사의 핵심 내용을 정리했어요")
     points = normalize_structured_key_points(blueprint.get("key_points") or [])
+    flow_order = [sanitize(item, "summary") for item in (blueprint.get("flow_order") or []) if sanitize(item, "summary")]
+    while len(flow_order) < 3:
+        flow_order.append(["배경/원인", "변화/대응", "영향/전망"][len(flow_order)])
     return {
-        "middle_school": {
-            "label": "중학생 수준",
-            "title": build_middle_school_title(base_title, takeaway, points),
-            "takeaway": build_middle_school_takeaway(takeaway),
-            "points": [
-                abstract_middle_school_text(points[0]),
-                abstract_middle_school_text(points[1]),
-                abstract_middle_school_text(points[2]),
-            ],
-        },
+        "middle_school": normalize_middle_school_level({}, base_title, takeaway, points),
         "high_school": {
             "label": "고등학생 수준",
             "title": base_title,
-            "takeaway": takeaway,
-            "points": points[:3],
+            "takeaway": build_level_takeaway(takeaway, flow_order, "high_school"),
+            "points": build_level_points(points, flow_order, "high_school"),
         },
         "university": {
             "label": "대학생 수준",
             "title": base_title,
-            "takeaway": takeaway,
-            "points": points[:3],
+            "takeaway": build_level_takeaway(takeaway, flow_order, "university"),
+            "points": build_level_points(points, flow_order, "university"),
         },
         "expert": {
             "label": "전문가 수준",
             "title": base_title,
-            "takeaway": takeaway,
-            "points": points[:3],
+            "takeaway": build_level_takeaway(takeaway, flow_order, "expert"),
+            "points": build_level_points(points, flow_order, "expert"),
         },
     }
 
@@ -509,6 +503,36 @@ def explanation_point(base: str, extra: str) -> str:
 
 
 MIDDLE_SCHOOL_REPLACEMENTS = [
+    (r"\bMCP\b", "인공지능과 데이터를 이어주는 연결 도구"),
+    (r"플랫폼 기술", "기술"),
+    (r"물류 플랫폼", "물류 서비스"),
+    (r"시장 분석 서비스", "시장 흐름을 살펴보는 서비스"),
+    (r"반도체 소재", "반도체를 만들 때 들어가는 재료"),
+    (r"\bEV 배터리\b", "전기차 배터리"),
+    (r"센서 데이터 수집, SaaS 관제, AI 예측 분석과 보험 연계를 통합한 물류 플랫폼", "센서로 정보를 모으고 실시간으로 살펴보며 인공지능으로 위험을 미리 알려주고 보상 도움까지 이어주는 물류 서비스"),
+    (r"IoT 센서, 실시간 관제 SaaS, AI 분석 엔진", "여러 센서, 실시간으로 살펴보는 관리 서비스, 인공지능 분석 도구"),
+    (r"AI 기반 위험 예측 기술", "인공지능으로 위험을 미리 살펴보는 기술"),
+    (r"글로벌 스마트물류 시장", "해외의 똑똑한 물류 시장"),
+    (r"물류 플랫폼의 기술력", "물류 서비스를 만든 기술 실력"),
+    (r"해외 거점 확대", "해외 거점을 넓히는 일"),
+    (r"\bAI\b", "인공지능"),
+    (r"\bIoT\b", "여러 센서"),
+    (r"\bSaaS\b", "화면으로 한눈에 살펴보는 관리 서비스"),
+    (r"\bEV\b", "전기차"),
+    (r"\bIP\b", "기술 권리"),
+    (r"AI 예측 분석", "인공지능으로 미리 살펴보는 분석"),
+    (r"AI 분석 엔진", "인공지능 분석 도구"),
+    (r"리스크", "위험"),
+    (r"플랫폼", "한곳에서 관리하는 서비스"),
+    (r"보험 연계", "보상 도움까지 이어주는 장치"),
+    (r"정책금융", "정부가 돕는 자금 지원"),
+    (r"해외 판로 개척", "해외 고객을 찾는 일"),
+    (r"기술력", "기술 실력"),
+    (r"고부가가치 화물", "값비싸고 관리가 까다로운 화물"),
+    (r"스마트물류", "똑똑한 물류"),
+    (r"최종 선정됐다", "최종적으로 뽑혔어요"),
+    (r"선정됐다", "뽑혔어요"),
+    (r"인정받아", "좋은 평가를 받아"),
     (
         r"화학 부문 실적 반등을 바탕으로 흑자 전환에 성공했으며",
         "공장에서 만들던 물건들 사업이 다시 힘을 내며 적자에서 벗어나 돈을 벌기 시작했고",
@@ -544,6 +568,57 @@ MIDDLE_SCHOOL_REPLACEMENTS = [
     (r"리밸런싱", "비율을 맞추기 위해 자산을 다시 조정하는 것"),
 ]
 
+LEVEL_REPLACEMENTS = {
+    "high_school": [
+        (r"기술력", "기술 경쟁력"),
+        (r"인정받아", "평가받아"),
+        (r"사업 확장", "사업 확대"),
+        (r"위험 예측", "위험 예측 기능"),
+        (r"적용되고 있으며", "활용되고 있으며"),
+        (r"계획이다", "전망이다"),
+    ],
+    "university": [
+        (r"기술력", "기술 경쟁력"),
+        (r"선정됐다", "선정되었다"),
+        (r"사업 확장", "사업 확장 전략"),
+        (r"위험 예측", "리스크 예측"),
+        (r"지원을 받으며", "정책 지원을 바탕으로"),
+        (r"적용되고 있으며", "적용되며"),
+        (r"해외 거점 확대", "해외 거점 확장"),
+    ],
+    "expert": [
+        (r"기술력", "기술 경쟁력"),
+        (r"사업 확장", "사업 확장 로드맵"),
+        (r"위험 예측", "리스크 예측"),
+        (r"지원", "정책금융·비금융 지원"),
+        (r"보험 연계", "보험 연계 체계"),
+        (r"해외 판로 개척", "해외 판로 개척과 사업화"),
+        (r"해외 거점 확대", "해외 거점 확장"),
+    ],
+}
+
+LEVEL_TAKEAWAY_SUFFIXES = {
+    "high_school": "이 기사에서는 {0}에서 시작해 {2}로 이어지는 흐름이 또렷하게 드러납니다.",
+    "university": "이를 통해 {1}의 전개 방식과 {2}로 연결되는 구조를 함께 읽을 수 있습니다.",
+    "expert": "실무적으로는 {1}의 집행 방식과 {2}의 파급 범위를 함께 점검할 필요가 있습니다.",
+}
+
+MIDDLE_SCHOOL_JARGON_MARKERS = (
+    "SaaS",
+    "IoT",
+    "AI",
+    "EV",
+    "IP",
+    "플랫폼",
+    "리스크",
+    "정책금융",
+    "보험 연계",
+    "기술력",
+    "고부가가치",
+    "스마트물류",
+    "소재",
+)
+
 
 def abstract_middle_school_text(text: str) -> str:
     out = ensure_sentence(text)
@@ -554,6 +629,16 @@ def abstract_middle_school_text(text: str) -> str:
     out = out.replace("무기으로", "무기로")
     out = out.replace("좋아지면서과", "좋아지고")
     out = out.replace("팔리면서가", "팔리면서")
+    out = out.replace("서비스은", "서비스는")
+    out = out.replace("센서 센서", "센서")
+    out = out.replace("기술 실력을 좋은 평가를 받아", "기술 실력을 높게 평가받아")
+    out = out.replace("제공한다.", "제공해요.")
+    out = out.replace("적용되고 있으며", "쓰이고 있으며")
+    out = out.replace("진행 중이다.", "진행 중이에요.")
+    out = out.replace("나서게 됐다.", "나서게 됐어요.")
+    out = out.replace("강화해 나가겠다", "더 키워 나가겠다고 했어요")
+    out = out.replace("해당 솔루션", "이 서비스")
+    out = out.replace("국토교통부 분야", "교통과 물류 분야")
     out = re.sub(r"\s+", " ", out).strip()
     return out
 
@@ -579,6 +664,65 @@ def build_middle_school_takeaway(takeaway: str) -> str:
     simplified = abstract_middle_school_text(takeaway)
     simplified = simplified.replace("흐름", "").strip()
     return ensure_sentence(simplified)
+
+
+def middle_school_has_jargon(text: str) -> bool:
+    raw = sanitize(text, "summary")
+    if not raw:
+        return False
+    return any(marker in raw for marker in MIDDLE_SCHOOL_JARGON_MARKERS)
+
+
+def normalize_middle_school_level(item: dict, base_title: str, takeaway: str, points):
+    title = sanitize((item or {}).get("title"), "title")
+    if not title or title == sanitize(base_title, "title") or middle_school_has_jargon(title):
+        title = build_middle_school_title(base_title, takeaway, points)
+    title = abstract_middle_school_text(title)
+    normalized_takeaway = build_middle_school_takeaway((item or {}).get("takeaway") or takeaway)
+    normalized_points = [
+        abstract_middle_school_text(point)
+        for point in ((item or {}).get("points") or points)[:3]
+    ]
+    while len(normalized_points) < 3:
+        normalized_points.append("중요한 내용을 학생 눈높이에 맞춰 더 쉽게 설명하고 있어요.")
+    return {
+        "label": "중학생 수준",
+        "title": title,
+        "takeaway": normalized_takeaway,
+        "points": normalized_points[:3],
+    }
+
+
+def apply_level_replacements(text: str, level: str) -> str:
+    out = ensure_sentence(text)
+    for pattern, replacement in LEVEL_REPLACEMENTS.get(level, []):
+        out = re.sub(pattern, replacement, out)
+    out = out.replace("  ", " ").strip()
+    return ensure_sentence(out)
+
+
+def build_level_takeaway(takeaway: str, flow_order, level: str) -> str:
+    rewritten = apply_level_replacements(takeaway, level)
+    suffix_template = LEVEL_TAKEAWAY_SUFFIXES.get(level)
+    if not suffix_template:
+        return rewritten
+    suffix = suffix_template.format(*flow_order[:3])
+    return explanation_takeaway(rewritten, suffix)
+
+
+def build_level_points(points, flow_order, level: str):
+    out = []
+    for idx, point in enumerate(points[:3]):
+        rewritten = apply_level_replacements(point, level)
+        flow = sanitize(flow_order[idx], "summary")
+        if level == "high_school" and flow:
+            rewritten = explanation_point(rewritten, f"이 지점은 {flow}라는 흐름을 이해하는 데 중요합니다")
+        elif level == "university" and flow:
+            rewritten = explanation_point(rewritten, f"이는 {flow}라는 구조적 전개와 연결됩니다")
+        elif level == "expert" and flow:
+            rewritten = explanation_point(rewritten, f"실무적으로는 {flow}라는 함의를 확인할 수 있습니다")
+        out.append(rewritten)
+    return out
 
 
 def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
