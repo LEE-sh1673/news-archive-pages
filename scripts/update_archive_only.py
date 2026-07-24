@@ -16,7 +16,9 @@ from urllib.error import HTTPError, URLError
 from html.parser import HTMLParser
 
 from build_data import (
+    build_explanation_variants_from_blueprint,
     build_explanation_variants_from_summary,
+    build_summary_blueprint_from_ai_summary,
     extract_keywords,
     filter_lines_by_title_relevance,
 )
@@ -59,6 +61,8 @@ THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
 CODEX_TIMEOUT_SECONDS = max(15, int(os.environ.get("CODEX_TIMEOUT_SECONDS", "45")))
+MIDDLE_SCHOOL_SYSTEM_PROMPT_PATH = ROOT_DIR / "prompts" / "middle_school_system_prompt.md"
+MIDDLE_SCHOOL_FEWSHOT_PATH = ROOT_DIR / "prompts" / "middle_school_fewshot.md"
 NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
 _NEWSAPI_SESSION = None
 
@@ -470,6 +474,50 @@ def _parse_ai_summary(text: str) -> dict:
     }
 
 
+def _load_prompt_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _validate_article_type(category: str, article_type: str) -> str:
+    broad = clean_text(category) or "일반"
+    allowed = {"기업/실적", "정책/행정", "시장/금융", "기술/제품", "사회/일반"}
+    sub = clean_text(article_type)
+    if sub not in allowed:
+        sub = "사회/일반"
+    return f"{broad}/{sub}"
+
+
+def _validate_flow_order(values) -> list[str]:
+    flow = [clean_text(value) for value in (values or []) if clean_text(value)]
+    while len(flow) < 3:
+        flow.append(["배경/원인", "변화/대응", "영향/전망"][len(flow)])
+    return flow[:3]
+
+
+def _validate_summary_blueprint(payload, title: str, category: str) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    clean_title = clean_text(payload.get("title", "")) or clean_text(title)
+    takeaway = _normalize_summary_sentence(payload.get("takeaway", ""))
+    key_points = [_normalize_summary_sentence(point) for point in payload.get("key_points", []) if _normalize_summary_sentence(point)]
+    if not clean_title or not takeaway or len(key_points) < 3:
+        return {}
+    return {
+        "title": clean_title,
+        "takeaway": takeaway,
+        "key_points": key_points[:3],
+        "article_type": _validate_article_type(category, payload.get("article_type", "")),
+        "flow_order": _validate_flow_order(payload.get("flow_order", [])),
+    }
+
+
+def _structured_summary_fallback(title: str, ai_summary: str, category: str) -> dict:
+    return build_summary_blueprint_from_ai_summary(title, ai_summary, category=category)
+
+
 def _looks_like_leading_source_lines(points, source: str) -> bool:
     source_lines = []
     for raw in str(source or "").splitlines():
@@ -527,6 +575,14 @@ def _compose_ai_summary(title: str, takeaway: str, points) -> str:
     )
 
 
+def compose_ai_summary_from_blueprint(blueprint: dict) -> str:
+    return _compose_ai_summary(
+        blueprint.get("title", ""),
+        blueprint.get("takeaway", ""),
+        blueprint.get("key_points", []),
+    )
+
+
 def build_core_summary(title: str, description: str, body_text: str) -> str:
     source = minimal_context_filter(title, description, body_text)
     if not source:
@@ -555,6 +611,55 @@ def build_core_summary(title: str, description: str, body_text: str) -> str:
         lines = [clean_text(ln.lstrip("- ").strip()) for ln in bullet_summary.splitlines() if clean_text(ln)]
         return " ".join(lines[:4]).strip()
     return ""
+
+
+def build_summary_blueprint(title: str, description: str, body_text: str, category: str) -> dict:
+    source = minimal_context_filter(title, description, body_text)
+    if not _has_readable_content(source):
+        return {}
+
+    prompt = (
+        "아래 기사 원문을 읽고 구조화 요약 JSON을 작성해줘.\n"
+        "- 출력 키는 title, takeaway, key_points, article_type, flow_order 를 사용\n"
+        "- article_type 은 반드시 기업/실적, 정책/행정, 시장/금융, 기술/제품, 사회/일반 중 하나만 선택\n"
+        "- 기사의 대분류 카테고리는 참고 정보이며, article_type 은 본문을 읽고 판단\n"
+        "- takeaway 는 원인과 결과가 보이는 1~2문장\n"
+        "- key_points 는 정확히 3개, 서로 다른 핵심 사실\n"
+        "- flow_order 도 정확히 3개이며 key_points 의 흐름을 짧게 설명\n"
+        "- key_points 와 flow_order 는 기사 유형에 맞게 자연스럽게 잡되, 억지로 동일 패턴을 강요하지 말 것\n"
+        "- 원문 첫 3문장을 그대로 베끼지 말고 재구성\n"
+        "- 없는 숫자나 전망을 새로 만들지 말 것\n"
+        "- JSON만 반환\n\n"
+        f"기사 대분류 카테고리: {category}\n"
+        f"기사 제목: {title}\n"
+        f"기사 설명: {description}\n"
+        f"기사 원문: {source}\n"
+    )
+
+    if PREFERRED_LLM_BACKEND == "codex":
+        payload = _extract_json_object(run_codex_cli_summary(prompt))
+        valid = _validate_summary_blueprint(payload, title, category)
+        if valid:
+            return valid
+    if OPENAI_API_KEY:
+        payload = _openai_json_response(prompt)
+        valid = _validate_summary_blueprint(payload, title, category)
+        if valid:
+            return valid
+
+    core_summary = build_core_summary(title, description, source)
+    if _has_readable_content(core_summary):
+        structured = format_ai_summary_from_core_summary(title, core_summary)
+        if _is_valid_ai_summary(structured, source):
+            return _structured_summary_fallback(title, structured, category)
+        fallback_from_summary = build_ai_summary_from_core_summary(title, core_summary)
+        if _is_valid_ai_summary(fallback_from_summary, source):
+            return _structured_summary_fallback(title, fallback_from_summary, category)
+
+    fallback = _fallback_ai_summary(title, source)
+    if _is_valid_ai_summary(fallback, source):
+        return _structured_summary_fallback(title, fallback, category)
+    return {}
 
 
 def format_ai_summary_from_core_summary(title: str, core_summary: str) -> str:
@@ -628,22 +733,19 @@ def run_codex_cli_summary(prompt: str) -> str:
             pass
 
 
-def build_ai_summary(title: str, description: str, body_text: str) -> str:
+def build_ai_summary(title: str, description: str, body_text: str, category: str = "") -> tuple[str, dict]:
     source = minimal_context_filter(title, description, body_text)
     if not _has_readable_content(source):
-        return "요약할 수 없는 내용입니다"
-    core_summary = build_core_summary(title, description, source)
-    if _has_readable_content(core_summary):
-        structured = format_ai_summary_from_core_summary(title, core_summary)
-        if _is_valid_ai_summary(structured, source):
-            return structured
-
-        fallback_from_summary = build_ai_summary_from_core_summary(title, core_summary)
-        if _is_valid_ai_summary(fallback_from_summary, source):
-            return fallback_from_summary
-
+        return "요약할 수 없는 내용입니다", {}
+    blueprint = build_summary_blueprint(title, description, source, category)
+    if blueprint:
+        summary = compose_ai_summary_from_blueprint(blueprint)
+        if _is_valid_ai_summary(summary, source):
+            return summary, blueprint
     fallback = _fallback_ai_summary(title, source)
-    return fallback if _is_valid_ai_summary(fallback, source) else "요약할 수 없는 내용입니다"
+    if _is_valid_ai_summary(fallback, source):
+        return fallback, _structured_summary_fallback(title, fallback, category)
+    return "요약할 수 없는 내용입니다", {}
 
 
 def _extract_json_object(text: str):
@@ -710,21 +812,31 @@ def _validate_explanation_levels(payload):
     return out
 
 
-def build_explanation_levels(title: str, ai_summary: str, body_text: str):
-    parsed = _parse_ai_summary(ai_summary)
-    if parsed["takeaway"] and len(parsed["points"]) >= 3:
+def build_explanation_levels(title: str, ai_summary: str, body_text: str, structured_summary: dict | None = None):
+    blueprint = structured_summary or {}
+    if not blueprint:
+        parsed = _parse_ai_summary(ai_summary)
+        if parsed["takeaway"] and len(parsed["points"]) >= 3:
+            blueprint = build_summary_blueprint_from_ai_summary(title, ai_summary)
+        else:
+            blueprint = {}
+    if blueprint.get("takeaway") and len(blueprint.get("key_points", [])) >= 3:
+        middle_prompt_doc = _load_prompt_text(MIDDLE_SCHOOL_SYSTEM_PROMPT_PATH)
+        middle_fewshot_doc = _load_prompt_text(MIDDLE_SCHOOL_FEWSHOT_PATH)
         prompt = (
             "아래 기사 요약을 바탕으로 다정한 존댓말 어투의 4단계 설명 데이터를 JSON으로 작성해줘.\n"
             "- 단계 키는 middle_school, high_school, university, expert 를 사용\n"
             "- 각 단계는 title, takeaway, points(길이 3 배열)를 가져야 함\n"
             "- 네 단계는 모두 같은 기사 흐름을 설명해야 하며, 서로 다른 사실이나 새로운 쟁점을 추가하면 안 됨\n"
             "- 네 단계 모두 동일한 3개 핵심 포인트 순서를 유지하고, 난이도와 표현만 바꿔야 함\n"
-            "- 보통 1번 포인트는 실적/원인, 2번 포인트는 사업 확장/구조 변화, 3번 포인트는 향후 성장/영향 흐름으로 맞춘다고 생각하면 됨\n"
+            "- flow_order 에 제시된 흐름 순서를 그대로 따라야 함\n"
             "- title 은 해당 수준에 맞게 요약과 어투가 반영된 자연스러운 문장형 제목으로 작성\n"
             "- takeaway 는 2문장 이내의 핵심 요약으로 작성\n"
             "- points 는 반드시 3개만 작성하고, 각 항목은 한 문장으로 짧고 또렷하게 작성\n"
             "- 원문 사실을 벗어나지 말고, 없는 숫자나 전망을 새로 만들지 말 것\n"
             "- middle_school: 중학생 눈높이, 쉬운 비유와 쉬운 단어 사용\n"
+            "- middle_school 은 제공된 시스템 프롬프트와 few-shot 정책을 반드시 우선 적용\n"
+            "- middle_school 은 기사 원문 사실 범위 안에서만 쉬운 말로 재표현하고, 비유는 허용하지만 새로운 사실 추가 금지, 연도/수치/기업명은 가능한 유지\n"
             "- high_school: 고등학생 눈높이, 개념과 원인을 연결\n"
             "- university: 대학생 눈높이, 구조와 메커니즘 설명\n"
             "- expert: 실무 전문가 눈높이, 제도/시장/메커니즘 중심\n"
@@ -732,10 +844,17 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             "- 같은 사건을 다른 난이도로 풀어쓴다는 점이 핵심이며, 단계별로 포인트 방향이 달라지면 안 됨\n"
             "- 출력은 JSON만 반환\n\n"
             f"기사 제목: {title}\n"
-            f"핵심 요약: {parsed['takeaway']}\n"
-            f"주요 포인트: {json.dumps(parsed['points'], ensure_ascii=False)}\n"
+            f"구조화 요약 제목: {blueprint['title']}\n"
+            f"구조화 핵심 요약: {blueprint['takeaway']}\n"
+            f"구조화 주요 포인트: {json.dumps(blueprint['key_points'], ensure_ascii=False)}\n"
+            f"세부 기사 유형: {blueprint.get('article_type', '')}\n"
+            f"포인트 흐름 순서: {json.dumps(blueprint.get('flow_order', []), ensure_ascii=False)}\n"
             f"본문 참고: {clean_text(body_text)[:1800]}\n"
         )
+        if middle_prompt_doc:
+            prompt += f"\n[중학생 시스템 프롬프트]\n{middle_prompt_doc}\n"
+        if middle_fewshot_doc:
+            prompt += f"\n[중학생 Few-shot 예시]\n{middle_fewshot_doc}\n"
         if PREFERRED_LLM_BACKEND == "codex":
             payload = _extract_json_object(run_codex_cli_summary(prompt))
             valid = _validate_explanation_levels(payload)
@@ -746,6 +865,8 @@ def build_explanation_levels(title: str, ai_summary: str, body_text: str):
             valid = _validate_explanation_levels(payload)
             if valid:
                 return valid
+    if blueprint:
+        return build_explanation_variants_from_blueprint(blueprint, article_title=title)
     return build_explanation_variants_from_summary(title, ai_summary)
 
 
@@ -1628,11 +1749,24 @@ def refresh_existing_explanations(path: str, limit: int):
         source = clean_text(row.get("scraped_body") or row.get("body") or row.get("summary"))
         title = clean_text(row.get("title", ""))
         ai_summary = str(row.get("ai_summary", "") or "")
+        blueprint = row.get("summary_blueprint") if isinstance(row.get("summary_blueprint"), dict) else {}
         if not _is_valid_ai_summary(ai_summary, source):
-            ai_summary = build_ai_summary(title, clean_text(row.get("summary", "")), source)
+            ai_summary, blueprint = build_ai_summary(
+                title,
+                clean_text(row.get("summary", "")),
+                source,
+                category=clean_text(row.get("category", "")),
+            )
             if _is_valid_ai_summary(ai_summary, source):
                 row["ai_summary"] = ai_summary
-        row["explanation_levels"] = build_explanation_levels(title, row.get("ai_summary", ai_summary), source)
+        if blueprint:
+            row["summary_blueprint"] = blueprint
+        row["explanation_levels"] = build_explanation_levels(
+            title,
+            row.get("ai_summary", ai_summary),
+            source,
+            structured_summary=blueprint,
+        )
         updated += 1
         if updated % 5 == 0:
             rewrite_archive_parts(path, [json.dumps(item, ensure_ascii=False) + "\n" for item in rows])
@@ -1640,6 +1774,50 @@ def refresh_existing_explanations(path: str, limit: int):
     if updated and updated % 5:
         rewrite_archive_parts(path, [json.dumps(row, ensure_ascii=False) + "\n" for row in rows])
     return updated
+
+
+def rebuild_summary_assets(row: dict, force: bool = False):
+    title = clean_text(row.get("title", ""))
+    category = clean_text(row.get("category", ""))
+    summary_text = clean_text(row.get("summary", ""))
+    source = clean_text(row.get("scraped_body") or row.get("body") or summary_text)
+    ai_summary = str(row.get("ai_summary", "") or "")
+    blueprint = row.get("summary_blueprint") if isinstance(row.get("summary_blueprint"), dict) else {}
+
+    if force or not blueprint:
+        regenerated_summary, regenerated_blueprint = build_ai_summary(
+            title,
+            summary_text,
+            source,
+            category=category,
+        )
+        if _is_valid_ai_summary(regenerated_summary, source):
+            ai_summary = regenerated_summary
+            row["ai_summary"] = regenerated_summary
+        if regenerated_blueprint:
+            blueprint = regenerated_blueprint
+            row["summary_blueprint"] = regenerated_blueprint
+    elif not _is_valid_ai_summary(ai_summary, source):
+        regenerated_summary, regenerated_blueprint = build_ai_summary(
+            title,
+            summary_text,
+            source,
+            category=category,
+        )
+        if _is_valid_ai_summary(regenerated_summary, source):
+            ai_summary = regenerated_summary
+            row["ai_summary"] = regenerated_summary
+        if regenerated_blueprint:
+            blueprint = regenerated_blueprint
+            row["summary_blueprint"] = regenerated_blueprint
+
+    row["explanation_levels"] = build_explanation_levels(
+        title,
+        row.get("ai_summary", ai_summary),
+        source,
+        structured_summary=blueprint,
+    )
+    return row
 
 
 def refresh_latest_explanations(path: str, limit: int):
@@ -1655,13 +1833,11 @@ def refresh_latest_explanations(path: str, limit: int):
         source = clean_text(row.get("scraped_body") or row.get("body") or row.get("summary"))
         if not source:
             continue
-        title = clean_text(row.get("title", ""))
-        ai_summary = str(row.get("ai_summary", "") or "")
-        if not _is_valid_ai_summary(ai_summary, source):
-            ai_summary = build_ai_summary(title, clean_text(row.get("summary", "")), source)
-            if _is_valid_ai_summary(ai_summary, source):
-                row["ai_summary"] = ai_summary
-        row["explanation_levels"] = build_explanation_levels(title, row.get("ai_summary", ai_summary), source)
+        blueprint = row.get("summary_blueprint") if isinstance(row.get("summary_blueprint"), dict) else {}
+        levels = row.get("explanation_levels") if isinstance(row.get("explanation_levels"), dict) else {}
+        if blueprint.get("key_points") and all(isinstance(levels.get(key), dict) for key in ("middle_school", "high_school", "university", "expert")):
+            continue
+        rows[idx] = rebuild_summary_assets(row, force=True)
         updated += 1
         if updated % 5 == 0:
             rewrite_archive_parts(path, [json.dumps(item, ensure_ascii=False) + "\n" for item in rows])
@@ -1826,8 +2002,13 @@ def main() -> int:
             # summary = summarize(title, desc, body_raw)
             # TO-BE: crawl -> noise removal -> formatting
             formatted_body = format_crawled_body(title, desc, body_raw)
-            ai_summary = build_ai_summary(title, desc, body_raw)
-            explanation_levels = build_explanation_levels(title, ai_summary, body_raw or formatted_body or desc)
+            ai_summary, summary_blueprint = build_ai_summary(title, desc, body_raw, category=category)
+            explanation_levels = build_explanation_levels(
+                title,
+                ai_summary,
+                body_raw or formatted_body or desc,
+                structured_summary=summary_blueprint,
+            )
             keywords = extract_keywords(
                 title,
                 body_raw or formatted_body or desc,
@@ -1846,6 +2027,7 @@ def main() -> int:
                     # Detail view body should show formatted crawled content.
                     "body": formatted_body or summary,
                     "ai_summary": ai_summary,
+                    "summary_blueprint": summary_blueprint,
                     "explanation_levels": explanation_levels,
                     "thumbnail": thumb,
                     "scraped_body": body_raw,

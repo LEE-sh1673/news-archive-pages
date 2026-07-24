@@ -408,92 +408,72 @@ def parse_ai_summary_block(text: str):
     }
 
 
-def ensure_sentence(text: str) -> str:
-    clean = sanitize(text, "summary").strip(" -")
-    if not clean:
-        return ""
-    if clean[-1] not in ".!?。요다":
-        clean = clean + "."
-    return clean
-
-
-def explanation_title(base_title: str, suffix: str) -> str:
-    clean = sanitize(base_title, "title").strip()
-    if not clean:
-        clean = "기사 핵심 내용"
-    clean = clean.rstrip(" .!?")
-    return f"{clean}, {suffix}"
-
-
-def explanation_takeaway(base: str, extra: str) -> str:
-    core = ensure_sentence(base) or "기사의 핵심 내용을 정리해 드릴게요."
-    extra = sanitize(extra, "summary").strip()
-    if not extra:
-        return core
-    if extra[-1] not in ".!?。요다":
-        extra = extra + "."
-    return f"{core} {extra}"
-
-
-def explanation_point(base: str, extra: str) -> str:
-    core = ensure_sentence(base) or "핵심 흐름을 함께 살펴보시면 이해에 도움이 돼요."
-    core = core.rstrip()
-    extra = sanitize(extra, "summary").strip()
-    if not extra:
-        return core
-    if extra[-1] not in ".!?。요다":
-        extra = extra + "."
-    return f"{core} {extra}"
-
-
-def _normalize_explanation_points(points):
+def normalize_structured_key_points(points):
     clean_points = [ensure_sentence(point) for point in points if ensure_sentence(point)]
     while len(clean_points) < 3:
         clean_points.append("핵심 내용을 추가로 정리할 수 있도록 본문 정보를 더 보완하고 있어요.")
     return clean_points[:3]
 
 
-def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
+def build_summary_blueprint_from_ai_summary(article_title: str, ai_summary: str, category: str = ""):
     parsed = parse_ai_summary_block(ai_summary)
-    base_title = parsed["title"] or sanitize(article_title, "title") or "기사 요약"
+    title = parsed["title"] or sanitize(article_title, "title") or "기사 요약"
     takeaway = ensure_sentence(parsed["takeaway"] or "기사의 핵심 내용을 정리했어요")
-    points = _normalize_explanation_points(parsed["points"])
-
-    point_guides = {
-        "middle_school": [
-            "이 부분이 수익이나 성과가 좋아진 이유라는 점을 편하게 보시면 돼요",
-            "이 부분이 회사가 새로 넓히는 사업 방향이라고 이해하시면 쉬워요",
-            "이 부분이 앞으로 기대하는 성장 흐름이라는 점을 함께 보시면 좋아요",
-        ],
-        "high_school": [
-            "즉, 실적 개선의 직접적인 배경과 수익성 회복 요인을 보여줍니다",
-            "즉, 회사가 어떤 사업 축으로 포트폴리오를 넓히는지 설명합니다",
-            "즉, 앞으로 중장기 성장 동력이 어디서 나올지를 보여줍니다",
-        ],
-        "university": [
-            "즉, 단기 실적 반등을 만든 메커니즘과 이익 체력 회복의 근거를 설명합니다",
-            "즉, 기존 사업에서 신사업으로 이동하는 포트폴리오 재편 흐름을 보여줍니다",
-            "즉, 설비 가동과 시장 확대가 향후 밸류에이션에 미칠 영향을 해석하게 해줍니다",
-        ],
-        "expert": [
-            "즉, 마진 리커버리와 볼륨 개선이 손익 구조에 어떤 변화를 만들었는지 보여줍니다",
-            "즉, 회사가 어떤 전자소재 축으로 밸류체인을 고도화하는지 확인할 수 있습니다",
-            "즉, 향후 CAPEX 결실과 매출 믹스 변화가 리레이팅 포인트가 될 수 있음을 시사합니다",
+    key_points = normalize_structured_key_points(parsed["points"])
+    broad_category = sanitize(category, "category") or "일반"
+    return {
+        "title": title,
+        "takeaway": takeaway,
+        "key_points": key_points,
+        "article_type": f"{broad_category}/사회/일반",
+        "flow_order": [
+            "배경/원인",
+            "변화/대응",
+            "영향/전망",
         ],
     }
 
-    variants = {
+
+def build_explanation_variants_from_blueprint(blueprint: dict, article_title: str = ""):
+    base_title = sanitize(blueprint.get("title"), "title") or sanitize(article_title, "title") or "기사 요약"
+    takeaway = ensure_sentence(blueprint.get("takeaway") or "기사의 핵심 내용을 정리했어요")
+    points = normalize_structured_key_points(blueprint.get("key_points") or [])
+    flow_order = [sanitize(item, "summary") for item in (blueprint.get("flow_order") or []) if sanitize(item, "summary")]
+    while len(flow_order) < 3:
+        flow_order.append(["배경/원인", "변화/대응", "영향/전망"][len(flow_order)])
+
+    point_guides = {
+        "middle_school": [
+            "이 부분을 보면 왜 이런 일이 시작됐는지 쉽게 이해할 수 있어요",
+            "이 부분을 보면 지금 어떤 새로운 움직임이 있는지 떠올리기 쉬워요",
+            "이 부분을 보면 앞으로 어떤 모습이 기대되는지 함께 생각해 볼 수 있어요",
+        ],
+        "high_school": [
+            f"즉, {flow_order[0]}라는 배경을 보여줍니다",
+            f"즉, {flow_order[1]}라는 전개를 설명합니다",
+            f"즉, {flow_order[2]}라는 후속 흐름을 보여줍니다",
+        ],
+        "university": [
+            f"즉, {flow_order[0]}라는 메커니즘을 설명합니다",
+            f"즉, {flow_order[1]}라는 구조 변화를 보여줍니다",
+            f"즉, {flow_order[2]}라는 파급 효과를 해석하게 해줍니다",
+        ],
+        "expert": [
+            f"즉, {flow_order[0]}라는 실무 배경을 보여줍니다",
+            f"즉, {flow_order[1]}라는 실행 방향을 확인할 수 있습니다",
+            f"즉, {flow_order[2]}라는 시장·운영상 함의를 시사합니다",
+        ],
+    }
+
+    return {
         "middle_school": {
             "label": "중학생 수준",
-            "title": explanation_title(base_title, "쉽고 또렷하게 풀어드릴게요"),
-            "takeaway": explanation_takeaway(
-                takeaway,
-                "어려운 말은 줄이고 어떤 일이 왜 중요한지부터 차근차근 짚어드릴게요",
-            ),
+            "title": build_middle_school_title(base_title, takeaway, points),
+            "takeaway": build_middle_school_takeaway(takeaway),
             "points": [
-                explanation_point(points[0], point_guides["middle_school"][0]),
-                explanation_point(points[1], point_guides["middle_school"][1]),
-                explanation_point(points[2], point_guides["middle_school"][2]),
+                explanation_point(abstract_middle_school_text(points[0]), point_guides["middle_school"][0]),
+                explanation_point(abstract_middle_school_text(points[1]), point_guides["middle_school"][1]),
+                explanation_point(abstract_middle_school_text(points[2]), point_guides["middle_school"][2]),
             ],
         },
         "high_school": {
@@ -536,7 +516,128 @@ def build_explanation_variants_from_summary(article_title: str, ai_summary: str)
             ],
         },
     }
-    return variants
+
+
+def ensure_sentence(text: str) -> str:
+    clean = sanitize(text, "summary").strip(" -")
+    if not clean:
+        return ""
+    if clean[-1] not in ".!?。요다":
+        clean = clean + "."
+    return clean
+
+
+def explanation_title(base_title: str, suffix: str) -> str:
+    clean = sanitize(base_title, "title").strip()
+    if not clean:
+        clean = "기사 핵심 내용"
+    clean = clean.rstrip(" .!?")
+    return f"{clean}, {suffix}"
+
+
+def explanation_takeaway(base: str, extra: str) -> str:
+    core = ensure_sentence(base) or "기사의 핵심 내용을 정리해 드릴게요."
+    extra = sanitize(extra, "summary").strip()
+    if not extra:
+        return core
+    if extra[-1] not in ".!?。요다":
+        extra = extra + "."
+    return f"{core} {extra}"
+
+
+def explanation_point(base: str, extra: str) -> str:
+    core = ensure_sentence(base) or "핵심 흐름을 함께 살펴보시면 이해에 도움이 돼요."
+    core = core.rstrip()
+    extra = sanitize(extra, "summary").strip()
+    if not extra:
+        return core
+    if extra[-1] not in ".!?。요다":
+        extra = extra + "."
+    return f"{core} {extra}"
+
+
+MIDDLE_SCHOOL_REPLACEMENTS = [
+    (
+        r"화학 부문 실적 반등을 바탕으로 흑자 전환에 성공했으며",
+        "공장에서 만들던 물건들 사업이 다시 힘을 내며 적자에서 벗어나 돈을 벌기 시작했고",
+    ),
+    (r"실적 반등을 바탕으로 흑자 전환에 성공했으며", "다시 힘을 내며 적자에서 벗어나 돈을 벌기 시작했고"),
+    (r"흑자 전환에 성공했으며", "적자에서 벗어나 다시 돈을 벌기 시작했고"),
+    (r"흑자 전환에 성공했다", "적자에서 벗어나 다시 돈을 벌기 시작했어요"),
+    (r"실적 반등", "다시 힘을 내기 시작한 흐름"),
+    (r"사업 전환을 가속하고 있다", "새롭고 멋진 모습으로 빠르게 변신하고 있어요"),
+    (r"사업 전환 가속화|포트폴리오 다변화", "새롭고 멋진 모습으로 변신하는 흐름"),
+    (
+        r"TDI·BTX 가격 회복과 석유화학 판매 증가가 2분기 수익성 개선을 이끌었다\.",
+        "공장에서 만들던 기본 화학 제품 가격이 다시 좋아지고 물건도 더 많이 팔리면서 최근에 기분 좋은 이익을 냈어요.",
+    ),
+    (r"TDI·BTX 가격 회복", "기본 화학 제품 가격이 다시 좋아지면서"),
+    (r"석유화학 판매 증가", "공장에서 만들던 물건들이 더 많이 팔리면서"),
+    (r"2분기 수익성 개선", "최근에 기분 좋은 이익을 낸 일"),
+    (
+        r"반도체용 폴리실리콘과 과산화수소를 넘어 재생 웨이퍼와 에천트 등으로 사업 영역을 넓히고 있다\.",
+        "원래 만들던 반도체 재료를 넘어 재생 웨이퍼와 특수 액체 같은 새로운 재료에도 도전하고 있어요.",
+    ),
+    (
+        r"2027년 이후 재생 웨이퍼 시설 가동과 반도체 소재 판매 확대가 중장기 성장 동력으로 기대된다\.",
+        "2027년 이후에는 재생 웨이퍼 시설이 본격적으로 돌아가고 핵심 재료 판매도 늘면서 회사가 더 크게 자랄 것으로 기대돼요.",
+    ),
+    (r"중장기 성장 동력으로 기대된다", "앞으로 회사를 더 크게 키워줄 든든한 무기가 될 것으로 기대됩니다"),
+    (r"중장기 성장 동력", "앞으로 회사를 더 크게 키워줄 든든한 무기"),
+    (r"기초화학|석유화학", "기본 화학 제품"),
+    (r"반도체 소재|밸류체인", "반도체를 만들 때 들어가는 핵심 재료"),
+    (r"\bTDI\b|\bBTX\b", "전문 화학 재료"),
+    (r"에천트|에칭액|에칭 가스", "특수 액체"),
+    (r"흑자 전환|턴어라운드", "적자에서 다시 돈을 벌기 시작한 흐름"),
+    (r"리밸런싱", "비율을 맞추기 위해 자산을 다시 조정하는 것"),
+]
+
+
+def abstract_middle_school_text(text: str) -> str:
+    out = ensure_sentence(text)
+    for pattern, replacement in MIDDLE_SCHOOL_REPLACEMENTS:
+        out = re.sub(pattern, replacement, out)
+    out = out.replace("기본 화학 제품 판매 증가", "공장에서 만들던 물건들이 더 많이 팔린 일")
+    out = out.replace("적자에서 다시 돈을 벌기 시작한 을", "다시 돈을 벌기 시작한 흐름을")
+    out = out.replace("무기으로", "무기로")
+    out = out.replace("좋아지면서과", "좋아지고")
+    out = out.replace("팔리면서가", "팔리면서")
+    out = re.sub(r"\s+", " ", out).strip()
+    return out
+
+
+def build_middle_school_title(base_title: str, takeaway: str, points) -> str:
+    text = " ".join([sanitize(base_title, "title"), takeaway, *points])
+    simplified = abstract_middle_school_text(text)
+    if re.search(r"돈을 벌|이익", simplified) and re.search(r"반도체를 만들 때 들어가는 핵심 재료|새롭고 멋진 모습", simplified):
+        return "성공적으로 다시 힘을 낸 회사가, 이제 새로운 핵심 재료에 도전하고 있어요"
+    if re.search(r"정부|지원|정책", simplified) and re.search(r"부담|수수료|도움", simplified):
+        return "정부와 여러 기관이 함께 힘을 모아 더 편하고 든든한 방법을 만들고 있어요"
+    if re.search(r"AI|인공지능", simplified) and re.search(r"예측|분석|위험", simplified):
+        return "똑똑한 인공지능이 미리 살펴보며 더 안전한 길을 만들어 주고 있어요"
+    title_core = sanitize(base_title, "title").strip(" .!?")
+    if not title_core:
+        title_core = "이 기사 이야기"
+    return f"{title_core}, 이제 더 쉽게 이해할 수 있게 풀어드릴게요"
+
+
+def build_middle_school_takeaway(takeaway: str) -> str:
+    simplified = abstract_middle_school_text(takeaway)
+    simplified = simplified.replace("흐름", "").replace("일", "").strip()
+    if "적자에서 다시 돈을 벌기 시작" in simplified:
+        return explanation_takeaway(
+            simplified,
+            "왜 다시 힘을 냈는지와 앞으로 어떤 멋진 변신을 준비하는지 차근차근 알려드릴게요",
+        )
+    return explanation_takeaway(
+        simplified,
+        "어려운 말 대신 쉬운 표현으로 원인과 결과가 보이게 설명해 드릴게요",
+    )
+
+
+def build_explanation_variants_from_summary(article_title: str, ai_summary: str):
+    blueprint = build_summary_blueprint_from_ai_summary(article_title, ai_summary)
+    return build_explanation_variants_from_blueprint(blueprint, article_title=article_title)
 
 
 def parse_dt(value: str):
@@ -1166,6 +1267,13 @@ def load_archive_rows(src: Path):
                         row.get("title", ""),
                         ai_summary or summary,
                     )
+                summary_blueprint = row.get("summary_blueprint")
+                if not isinstance(summary_blueprint, dict):
+                    summary_blueprint = build_summary_blueprint_from_ai_summary(
+                        row.get("title", ""),
+                        ai_summary or summary,
+                        category=row.get("category", ""),
+                    )
 
                 rows.append(
                     {
@@ -1186,6 +1294,7 @@ def load_archive_rows(src: Path):
                         "published_at": sanitize(row.get("published_at"), "published_at"),
                         "archived_at": sanitize(row.get("archived_at"), "archived_at"),
                         "keywords": [sanitize(keyword) for keyword in keywords if sanitize(keyword)],
+                        "summary_blueprint": summary_blueprint,
                         "explanation_levels": explanation_levels,
                     }
                 )
