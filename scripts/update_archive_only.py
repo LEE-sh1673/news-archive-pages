@@ -43,6 +43,12 @@ NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 PREFERRED_LLM_BACKEND = os.environ.get("PREFERRED_LLM_BACKEND", "codex").strip().lower()
+OPENAI_FALLBACK_ENABLED = os.environ.get("OPENAI_FALLBACK_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 TIMEZONE = os.environ.get("TIMEZONE", "Asia/Seoul")
 MAX_SUMMARY_LINES = max(1, int(os.environ.get("MAX_SUMMARY_LINES", "15")))
 ARCHIVE_PATH = os.environ.get("ARCHIVE_PATH", "data/news_archive.jsonl")
@@ -62,7 +68,7 @@ THUMBNAIL_DIR = Path(os.environ.get("THUMBNAIL_DIR", str(ROOT_DIR / "docs" / "as
 THUMBNAIL_MODEL = os.environ.get("THUMBNAIL_MODEL", "gpt-image-1")
 THUMBNAIL_SIZE = os.environ.get("THUMBNAIL_SIZE", "1024x1024")
 PLAYWRIGHT_TIMEOUT_MS = max(5000, int(os.environ.get("PLAYWRIGHT_TIMEOUT_MS", "60000")))
-CODEX_TIMEOUT_SECONDS = max(15, int(os.environ.get("CODEX_TIMEOUT_SECONDS", "45")))
+CODEX_TIMEOUT_SECONDS = max(15, int(os.environ.get("CODEX_TIMEOUT_SECONDS", "60")))
 CODEX_DEBUG = os.environ.get("CODEX_DEBUG", "").lower() in {"1", "true", "yes", "on"}
 MIDDLE_SCHOOL_SYSTEM_PROMPT_PATH = ROOT_DIR / "prompts" / "middle_school_system_prompt.md"
 MIDDLE_SCHOOL_FEWSHOT_PATH = ROOT_DIR / "prompts" / "middle_school_fewshot.md"
@@ -73,6 +79,14 @@ _NEWSAPI_SESSION = None
 def fail(msg: str) -> int:
     print(f"ERROR: {msg}", file=sys.stderr)
     return 1
+
+
+def can_use_openai_fallback() -> bool:
+    if not OPENAI_API_KEY:
+        return False
+    if PREFERRED_LLM_BACKEND == "openai":
+        return True
+    return OPENAI_FALLBACK_ENABLED
 
 
 def clean_text(s: str) -> str:
@@ -306,7 +320,7 @@ def llm_core_summary(title: str, description: str, content: str) -> str:
         txt = run_codex_cli_summary(prompt)
         if txt:
             return txt
-    if not OPENAI_API_KEY:
+    if not can_use_openai_fallback():
         return ""
     payload = {"model": OPENAI_MODEL, "input": prompt, "temperature": 0.2}
     req = urllib.request.Request(
@@ -315,10 +329,15 @@ def llm_core_summary(title: str, description: str, content: str) -> str:
         headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=40) as resp:
-        out = json.loads(resp.read().decode("utf-8", errors="replace"))
-    txt = clean_text(out.get("output_text", "").strip())
-    return txt
+    try:
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            out = json.loads(resp.read().decode("utf-8", errors="replace"))
+        txt = clean_text(out.get("output_text", "").strip())
+        return txt
+    except Exception as exc:
+        if CODEX_DEBUG:
+            print(f"WARN: OpenAI core summary fallback failed: {exc}", file=sys.stderr)
+        return ""
 
 
 def llm_format_bullets(title: str, core_summary: str) -> str:
@@ -337,7 +356,7 @@ def llm_format_bullets(title: str, core_summary: str) -> str:
         txt = run_codex_cli_summary(prompt)
         if txt:
             return normalize_bullet_output(txt)
-    if not OPENAI_API_KEY:
+    if not can_use_openai_fallback():
         return ""
     payload = {
         "model": OPENAI_MODEL,
@@ -353,10 +372,15 @@ def llm_format_bullets(title: str, core_summary: str) -> str:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        out = json.loads(resp.read().decode("utf-8", errors="replace"))
-    txt = out.get("output_text", "").strip()
-    return normalize_bullet_output(txt)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            out = json.loads(resp.read().decode("utf-8", errors="replace"))
+        txt = out.get("output_text", "").strip()
+        return normalize_bullet_output(txt)
+    except Exception as exc:
+        if CODEX_DEBUG:
+            print(f"WARN: OpenAI bullet formatting fallback failed: {exc}", file=sys.stderr)
+        return ""
 
 
 def summarize(title: str, description: str, content: str) -> str:
@@ -773,7 +797,7 @@ def _extract_json_object(text: str):
 
 
 def _openai_json_response(prompt: str):
-    if not OPENAI_API_KEY:
+    if not can_use_openai_fallback():
         return {}
     payload = {
         "model": OPENAI_MODEL,
@@ -789,9 +813,14 @@ def _openai_json_response(prompt: str):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=40) as resp:
-        out = json.loads(resp.read().decode("utf-8", errors="replace"))
-    return _extract_json_object(out.get("output_text", ""))
+    try:
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            out = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return _extract_json_object(out.get("output_text", ""))
+    except Exception as exc:
+        if CODEX_DEBUG:
+            print(f"WARN: OpenAI JSON fallback failed: {exc}", file=sys.stderr)
+        return {}
 
 
 def _contains_generic_explanation_template(text: str) -> bool:
